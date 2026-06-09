@@ -1,0 +1,118 @@
+version: '3.9'
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - api
+    networks:
+      - procura-net
+
+  frontend:
+    build:
+      context: ./client
+      target: dev
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=/api
+    networks:
+      - procura-net
+
+  api:
+    build:
+      context: ./server
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - ENTRY_FILE=app.js
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - procura-net
+    command: npx nodemon app.js
+
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.worker
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+      - whatsapp_session:/app/.wwebjs_auth
+    environment:
+      - NODE_ENV=development
+      - ENTRY_FILE=worker.js
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - procura-net
+    command: npx nodemon worker.js
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: procura
+      POSTGRES_PASSWORD: procura_secret
+      POSTGRES_DB: procura_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - procura-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procura -d procura_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - procura-net
+
+networks:
+  procura-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  whatsapp_session:

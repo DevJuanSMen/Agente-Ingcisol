@@ -1,0 +1,380 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Rol {
+  DIRECTOR
+  APOYO_DIRECTOR
+  RESIDENTE
+  ALMACENISTA
+  CONTABILIDAD
+}
+
+enum EstadoProyecto {
+  PLANIFICADO
+  EN_EJECUCION
+  FINALIZADO
+  SUSPENDIDO
+}
+
+enum EstadoDelegacion {
+  ACTIVA
+  COMPLETADA
+  REVOCADA
+}
+
+enum Segmento {
+  MATERIALES
+  EQUIPOS
+  HERRAMIENTAS
+  SERVICIOS
+}
+
+enum OrigenProveedor {
+  LOCAL
+  WEB_SEARCH
+}
+
+enum CanalRequisicion {
+  APP
+  WHATSAPP
+  GMAIL
+}
+
+enum EstadoRequisicion {
+  BORRADOR
+  PENDIENTE_JUST
+  ENVIADA
+  APROBADA
+  RECHAZADA
+  EN_COTIZACION
+  OC_EMITIDA
+  CERRADA
+}
+
+enum Prioridad {
+  ALTA
+  MEDIA
+  BAJA
+}
+
+enum EstadoCotizacion {
+  EN_BUSQUEDA
+  PENDIENTE_APROBACION
+  APROBADA
+  RECHAZADA
+}
+
+enum FuentePrecio {
+  HISTORIAL
+  LOCAL
+  WEB
+}
+
+enum Confiabilidad {
+  VALIDADO
+  LOCAL
+  REFERENCIA
+}
+
+enum EstadoOrden {
+  EMITIDA
+  ENVIADA
+  ENTREGADA
+  PAGADA
+  COMPLETADA
+  CANCELADA
+}
+
+// ─── Modelos ──────────────────────────────────────────────────────────────────
+
+model Company {
+  id          String   @id @default(cuid())
+  razonSocial String
+  nit         String   @unique
+  telefono    String?
+  direccion   String?
+  ciudad      String?
+  logoUrl     String?  @db.Text
+  firmaUrl    String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users        User[]
+  projects     Project[]
+  suppliers    Supplier[]
+  priceHistory PriceHistory[]
+  auditLogs    AuditLog[]
+  delegations  Delegation[]
+  basicPrices  BasicPrice[]
+}
+
+model User {
+  id             String   @id @default(cuid())
+  companyId      String
+  nombre         String
+  email          String   @unique
+  passwordHash   String
+  whatsapp       String?
+  rol            Rol
+  topeAprobacion Decimal  @default(0) @db.Decimal(15, 2)
+  activo         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company                Company        @relation(fields: [companyId], references: [id])
+  requisicionesCreadas   Requisition[]  @relation("solicitante")
+  requisicionesAprobadas Requisition[]  @relation("aprobador")
+  auditLogs              AuditLog[]
+  priceHistory           PriceHistory[]
+  delegacionesDadas      Delegation[]   @relation("delegante")
+  delegacionesRecibidas  Delegation[]   @relation("delegado")
+}
+
+model Project {
+  id          String         @id @default(cuid())
+  companyId   String
+  nombre      String
+  contratoNo  String
+  entidad     String?
+  descripcion String?
+  valor       Decimal?       @db.Decimal(18, 2)
+  inicio      DateTime?
+  fin         DateTime?
+  icono       String?        @default("🏗️")
+  color       String?        @default("#1B6FF5")
+  estado      EstadoProyecto @default(PLANIFICADO)
+  activo      Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  company      Company        @relation(fields: [companyId], references: [id])
+  itemsAPU     ItemAPU[]
+  requisitions Requisition[]
+  budgetSheets BudgetSheet[]
+  delegations  Delegation[]
+}
+
+model BudgetSheet {
+  id        String   @id @default(cuid())
+  projectId String
+  nombre    String
+  orden     Int      @default(0)
+  headers   Json
+  filas     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, nombre])
+}
+
+model Delegation {
+  id              String           @id @default(cuid())
+  companyId       String
+  projectId       String
+  deleganteId     String
+  delegadoId      String
+  tarea           String
+  descripcion     String?
+  estado          EstadoDelegacion @default(ACTIVA)
+  fechaLimite     DateTime?
+  fechaComplecion DateTime?
+  notas           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  company   Company @relation(fields: [companyId], references: [id])
+  project   Project @relation(fields: [projectId], references: [id])
+  delegante User    @relation("delegante", fields: [deleganteId], references: [id])
+  delegado  User    @relation("delegado", fields: [delegadoId], references: [id])
+}
+
+model ItemAPU {
+  id             String   @id @default(cuid())
+  projectId      String
+  codigo         String
+  descripcion    String
+  unidad         String
+  cantidad       Decimal  @db.Decimal(15, 4)
+  precioUnitario Decimal  @db.Decimal(15, 2)
+  saldoCantidad  Decimal  @db.Decimal(15, 4)
+  saldoValor     Decimal  @db.Decimal(15, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project          Project           @relation(fields: [projectId], references: [id])
+  requisitionItems RequisitionItem[]
+  quotationItems   QuotationItem[]
+  priceHistory     PriceHistory[]
+
+  @@unique([projectId, codigo])
+}
+
+model Supplier {
+  id         String          @id @default(cuid())
+  companyId  String
+  nombre     String
+  nit        String?
+  ciudad     String?
+  segmento   Segmento
+  whatsapp   String?
+  email      String?
+  homologado Boolean         @default(false)
+  rutUrl     String?
+  camaraUrl  String?
+  origen     OrigenProveedor @default(LOCAL)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  quotationItems QuotationItem[]
+  purchaseOrders PurchaseOrder[] @relation("proveedor")
+  wonQuotations  Quotation[]     @relation("proveedorGanador")
+  priceHistory   PriceHistory[]
+}
+
+model Requisition {
+  id            String            @id @default(cuid())
+  consecutivo   String            @unique
+  projectId     String
+  solicitanteId String
+  aprobadorId   String?
+  canal         CanalRequisicion  @default(APP)
+  estado        EstadoRequisicion @default(BORRADOR)
+  prioridad     Prioridad         @default(MEDIA)
+  fechaLimite   DateTime?
+  motivoRechazo String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  project     Project           @relation(fields: [projectId], references: [id])
+  solicitante User              @relation("solicitante", fields: [solicitanteId], references: [id])
+  aprobador   User?             @relation("aprobador", fields: [aprobadorId], references: [id])
+  items       RequisitionItem[]
+  quotation   Quotation?
+}
+
+model RequisitionItem {
+  id            String  @id @default(cuid())
+  requisitionId String
+  itemApuId     String?
+  descripcion   String
+  cantidad      Decimal @db.Decimal(15, 4)
+  unidad        String
+  enAPU         Boolean @default(false)
+
+  requisition Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  itemAPU     ItemAPU?    @relation(fields: [itemApuId], references: [id])
+}
+
+model Quotation {
+  id                 String           @id @default(cuid())
+  requisitionId      String           @unique
+  estado             EstadoCotizacion @default(EN_BUSQUEDA)
+  proveedorGanadorId String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  requisition      Requisition     @relation(fields: [requisitionId], references: [id])
+  proveedorGanador Supplier?       @relation("proveedorGanador", fields: [proveedorGanadorId], references: [id])
+  items            QuotationItem[]
+  purchaseOrder    PurchaseOrder?
+}
+
+model QuotationItem {
+  id             String        @id @default(cuid())
+  quotationId    String
+  supplierId     String
+  itemApuId      String
+  precioUnitario Decimal       @db.Decimal(15, 2)
+  precioTotal    Decimal       @db.Decimal(15, 2)
+  tiempoEntrega  Int
+  fuente         FuentePrecio
+  confiabilidad  Confiabilidad
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  supplier  Supplier  @relation(fields: [supplierId], references: [id])
+  itemAPU   ItemAPU   @relation(fields: [itemApuId], references: [id])
+}
+
+model PurchaseOrder {
+  id                  String      @id @default(cuid())
+  consecutivo         String      @unique
+  quotationId         String      @unique
+  supplierId          String
+  estado              EstadoOrden @default(EMITIDA)
+  montoTotal          Decimal     @db.Decimal(15, 2)
+  fechaEmision        DateTime    @default(now())
+  fechaEntregaPactada DateTime?
+  fechaEntregaReal    DateTime?
+  fechaPago           DateTime?
+  pdfUrl              String?
+  alertaEnviada       Boolean     @default(false)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  quotation    Quotation      @relation(fields: [quotationId], references: [id])
+  proveedor    Supplier       @relation("proveedor", fields: [supplierId], references: [id])
+  priceHistory PriceHistory[]
+}
+
+model PriceHistory {
+  id              String   @id @default(cuid())
+  companyId       String
+  supplierId      String
+  itemApuId       String
+  precioUnitario  Decimal  @db.Decimal(15, 2)
+  ciudad          String?
+  fecha           DateTime @default(now())
+  purchaseOrderId String?
+  registradoPorId String?
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  itemAPU       ItemAPU        @relation(fields: [itemApuId], references: [id])
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  registradoPor User?          @relation(fields: [registradoPorId], references: [id])
+}
+
+model BasicPrice {
+  id             String    @id @default(cuid())
+  companyId      String
+  codigo         String
+  descripcion    String
+  unidad         String
+  precioUnitario Decimal   @db.Decimal(15, 2)
+  fuente         String?
+  vigencia       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, codigo])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String
+  accion    String
+  entidad   String
+  entidadId String
+  ip        String?
+  canal     String?
+  metadata  Json?
+  timestamp DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+}

@@ -1,0 +1,98 @@
+version: '3.9'
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - api
+    networks:
+      - procura-net
+
+  frontend:
+    build:
+      context: ./client
+      target: prod
+    restart: always
+    networks:
+      - procura-net
+
+  api:
+    build:
+      context: ./server
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - ENTRY_FILE=app.js
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - procura-net
+    command: node app.js
+
+  worker:
+    build:
+      context: ./server
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - ENTRY_FILE=worker.js
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - procura-net
+    command: node worker.js
+
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: procura
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: procura_prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - procura-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procura -d procura_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - procura-net
+
+networks:
+  procura-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,62 @@
+const router = require('express').Router();
+const { verifyToken } = require('../../shared/middleware/auth');
+const { requireRole } = require('../../shared/middleware/rbac');
+const { ok } = require('../../shared/utils/response');
+const ordersService = require('./orders.service');
+
+router.use(verifyToken);
+
+router.get('/', async (req, res, next) => {
+  try {
+    const orders = await ordersService.listOrders(req.user.companyId, req.query);
+    ok(res, orders);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/:id', async (req, res, next) => {
+  try {
+    const order = await ordersService.getOrder(req.user.companyId, req.params.id);
+    ok(res, order);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put(
+  '/:id/confirm-delivery',
+  requireRole('DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'),
+  async (req, res, next) => {
+    try {
+      const order = await ordersService.confirmDelivery(req.user.companyId, req.params.id, req.user.id);
+      ok(res, order);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.put(
+  '/:id/register-payment',
+  requireRole('DIRECTOR', 'CONTABILIDAD'),
+  async (req, res, next) => {
+    try {
+      const order = await ordersService.registerPayment(req.user.companyId, req.params.id, req.user.id);
+      ok(res, order);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.delete('/:id', requireRole('DIRECTOR'), async (req, res, next) => {
+  try {
+    await ordersService.cancelOrder(req.user.companyId, req.params.id, req.user.id);
+    ok(res, { message: 'Orden cancelada' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
