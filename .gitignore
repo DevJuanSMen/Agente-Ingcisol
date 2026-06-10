@@ -1,0 +1,31 @@
+# Dependencias
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Variables de entorno
+.env
+.env.local
+.env.production
+
+# WhatsApp bot — sesión y caché de Chromium
+server/.wwebjs_auth/
+server/.wwebjs_cache/
+
+# Prisma
+server/prisma/migrations/*.lock
+
+# Build
+client/dist/
+client/.vite/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/settings.local.json

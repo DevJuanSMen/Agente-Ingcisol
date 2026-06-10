@@ -14,6 +14,7 @@ RUN npm run build
 
 FROM nginx:alpine AS prod
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf.template
 EXPOSE 3000
-CMD ["nginx", "-g", "daemon off;"]
+# Sustituye ${API_URL} en tiempo de ejecución y arranca nginx
+CMD ["/bin/sh", "-c", "envsubst '${API_URL}' < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
