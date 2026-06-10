@@ -7,8 +7,11 @@
     "dev": "nodemon app.js",
     "dev:worker": "nodemon worker.js",
     "start": "node app.js",
+    "worker": "node worker.js",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
     "db:seed": "node prisma/seed.js",
     "db:studio": "prisma studio"
   },
