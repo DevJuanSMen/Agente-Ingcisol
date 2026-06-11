@@ -3,8 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/api/health"
-healthcheckTimeout = 300
-startCommand = "npx prisma migrate deploy && node app.js"
+preDeployCommand = "npx prisma migrate deploy"
+startCommand = "node app.js"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
