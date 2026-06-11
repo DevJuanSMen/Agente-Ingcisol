@@ -1,3 +1,11 @@
+process.on('uncaughtException', (err) => {
+  console.error('[worker] uncaughtException:', err.message, err.stack);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[worker] unhandledRejection:', reason);
+});
+
 const cron = require('node-cron');
 const { logger } = require('./shared/utils/logger');
 const prisma = require('./shared/db');
