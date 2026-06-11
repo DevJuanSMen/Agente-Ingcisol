@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const { logger } = require('../../shared/utils/logger');
@@ -5,19 +7,42 @@ const redis = require('../../shared/redis');
 const prisma = require('../../shared/db');
 const { buildResponse } = require('./bot.context');
 
+// Limpia locks de Chromium que quedan al reiniciar el contenedor
+const clearChromiumLocks = (dataPath) => {
+  const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+  for (const f of lockFiles) {
+    const p = path.join(dataPath, 'session', f);
+    try { fs.unlinkSync(p); } catch { /* no existía */ }
+  }
+};
+
 let client = null;
 
 const initBot = () => {
+  const authDataPath = '/app/.wwebjs_auth';
+  clearChromiumLocks(authDataPath);
+
+  const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+  logger.info(`[bot] Usando Chromium en: ${chromiumPath}`);
+  try {
+    const exists = fs.existsSync(chromiumPath);
+    logger.info(`[bot] Chromium existe: ${exists}`);
+  } catch (e) {
+    logger.warn(`[bot] No se pudo verificar Chromium: ${e.message}`);
+  }
+
   client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: authDataPath }),
     puppeteer: {
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+      executablePath: chromiumPath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--no-first-run',
+        '--single-process',
+        '--no-zygote',
       ],
     },
   });
@@ -110,7 +135,12 @@ const initBot = () => {
   redis.set('whatsapp:status', 'disconnected');
 
   client.initialize().catch((err) => {
-    logger.error('[bot] Error al inicializar cliente:', err?.message || err?.toString() || JSON.stringify(err));
+    logger.error('[bot] Error al inicializar cliente', {
+      message: err?.message || '',
+      code: err?.code || '',
+      stack: err?.stack || '',
+      raw: String(err),
+    });
     redis.set('whatsapp:status', 'error');
   });
 
