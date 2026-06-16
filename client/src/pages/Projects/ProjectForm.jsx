@@ -19,7 +19,7 @@ const ESTADOS = [
 ];
 
 const EMPTY = {
-  nombre: '', contratoNo: '', entidad: '', descripcion: '',
+  nombre: '', contratoNo: '', entidad: '', interventor: '', ciudad: '', descripcion: '',
   valor: '', inicio: '', fin: '', icono: '🏗️', color: '#1B6FF5', estado: 'PLANIFICADO',
 };
 
@@ -43,6 +43,8 @@ export default function ProjectForm() {
           nombre: p.nombre || '',
           contratoNo: p.contratoNo || '',
           entidad: p.entidad || '',
+          interventor: p.interventor || '',
+          ciudad: p.ciudad || '',
           descripcion: p.descripcion || '',
           valor: p.valor || '',
           inicio: p.inicio ? p.inicio.split('T')[0] : '',
@@ -204,6 +206,24 @@ export default function ProjectForm() {
                   onChange={set('entidad')}
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                   placeholder="Secretaría de Educación / INVIAS / Privado"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Interventor</label>
+                <input
+                  value={form.interventor}
+                  onChange={set('interventor')}
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  placeholder="Nombre o firma interventora"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Región / Ciudad</label>
+                <input
+                  value={form.ciudad}
+                  onChange={set('ciudad')}
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  placeholder="Valledupar, Cesar"
                 />
               </div>
               <div className="sm:col-span-2">

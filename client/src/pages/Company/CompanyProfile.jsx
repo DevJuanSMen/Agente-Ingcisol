@@ -10,7 +10,10 @@ export default function CompanyProfile() {
   const isDirector = user?.rol === 'DIRECTOR';
 
   const [company, setCompany] = useState(null);
-  const [form, setForm] = useState({ razonSocial: '', nit: '', telefono: '', direccion: '', ciudad: '' });
+  const [form, setForm] = useState({
+    razonSocial: '', nit: '', representanteLegal: '', emailCorporativo: '',
+    telefono: '', direccion: '', ciudad: '', banco: '', tipoCuenta: '', numeroCuenta: '',
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -29,9 +32,14 @@ export default function CompanyProfile() {
         setForm({
           razonSocial: d.razonSocial || '',
           nit: d.nit || '',
+          representanteLegal: d.representanteLegal || '',
+          emailCorporativo: d.emailCorporativo || '',
           telefono: d.telefono || '',
           direccion: d.direccion || '',
           ciudad: d.ciudad || '',
+          banco: d.banco || '',
+          tipoCuenta: d.tipoCuenta || '',
+          numeroCuenta: d.numeroCuenta || '',
         });
       })
       .finally(() => setLoading(false));
@@ -132,6 +140,28 @@ export default function CompanyProfile() {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Representante legal</label>
+              <input
+                type="text"
+                value={form.representanteLegal}
+                onChange={(e) => setForm({ ...form, representanteLegal: e.target.value })}
+                disabled={!isDirector}
+                placeholder="Nombre completo"
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Email corporativo</label>
+              <input
+                type="email"
+                value={form.emailCorporativo}
+                onChange={(e) => setForm({ ...form, emailCorporativo: e.target.value })}
+                disabled={!isDirector}
+                placeholder="contacto@empresa.com"
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+              />
+            </div>
+            <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Teléfono</label>
               <input
                 type="text"
@@ -162,6 +192,48 @@ export default function CompanyProfile() {
                 disabled={!isDirector}
                 className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
               />
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-100">
+            <p className="text-sm font-semibold text-slate-700 mb-1">Datos bancarios</p>
+            <p className="text-xs text-slate-400 mb-3">Se incluirán en las órdenes de compra para pagos y facturación.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Banco</label>
+                <input
+                  type="text"
+                  value={form.banco}
+                  onChange={(e) => setForm({ ...form, banco: e.target.value })}
+                  disabled={!isDirector}
+                  placeholder="Bancolombia"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Tipo de cuenta</label>
+                <select
+                  value={form.tipoCuenta}
+                  onChange={(e) => setForm({ ...form, tipoCuenta: e.target.value })}
+                  disabled={!isDirector}
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                >
+                  <option value="">Seleccionar…</option>
+                  <option value="AHORROS">Ahorros</option>
+                  <option value="CORRIENTE">Corriente</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Número de cuenta</label>
+                <input
+                  type="text"
+                  value={form.numeroCuenta}
+                  onChange={(e) => setForm({ ...form, numeroCuenta: e.target.value })}
+                  disabled={!isDirector}
+                  placeholder="000-000000-00"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
             </div>
           </div>
 

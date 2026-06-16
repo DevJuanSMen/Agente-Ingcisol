@@ -1,4 +1,5 @@
 const prisma = require('../../shared/db');
+const notifications = require('../notifications/notifications.service');
 
 const generateConsecutivoOC = async (companyId) => {
   const year = new Date().getFullYear();
@@ -75,8 +76,14 @@ const confirmDelivery = async (companyId, orderId, userId) => {
     data: { estado: 'ENTREGADA', fechaEntregaReal: new Date() },
   });
 
-  // TODO: integrar notificación a Contabilidad
-  console.log('[orders] OC entregada:', order.consecutivo);
+  await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR', 'CONTABILIDAD'], {
+    tipo: 'OC_ENTREGADA',
+    titulo: `OC ${order.consecutivo} entregada`,
+    mensaje: 'Pendiente registrar el pago.',
+    entidad: 'PurchaseOrder',
+    entidadId: orderId,
+    excludeUserId: userId,
+  });
 
   await prisma.auditLog.create({
     data: {
@@ -128,6 +135,15 @@ const registerPayment = async (companyId, orderId, userId) => {
     });
 
     return oc;
+  });
+
+  await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR'], {
+    tipo: 'OC_PAGADA',
+    titulo: `OC ${order.consecutivo} pagada y completada`,
+    mensaje: 'La requisición asociada quedó cerrada.',
+    entidad: 'PurchaseOrder',
+    entidadId: orderId,
+    excludeUserId: userId,
   });
 
   await prisma.auditLog.create({

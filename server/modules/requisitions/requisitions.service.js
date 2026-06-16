@@ -1,4 +1,7 @@
 const prisma = require('../../shared/db');
+const redis = require('../../shared/redis');
+const notifications = require('../notifications/notifications.service');
+const { publishCommand } = require('../whatsapp/bot.ipc');
 
 const generateConsecutivo = async (projectId) => {
   const project = await prisma.project.findUnique({ where: { id: projectId } });
@@ -20,7 +23,11 @@ const listRequisitions = async (companyId, filters = {}) => {
   const projectIds = projects.map((p) => p.id);
 
   const where = { projectId: { in: projectIds } };
-  if (estado) where.estado = estado;
+  // estado acepta valor único o lista separada por comas (ej: "ENVIADA,PENDIENTE_JUST")
+  if (estado) {
+    const estados = String(estado).split(',').map((e) => e.trim()).filter(Boolean);
+    where.estado = estados.length > 1 ? { in: estados } : estados[0];
+  }
   if (projectId) where.projectId = projectId;
   if (solicitanteId) where.solicitanteId = solicitanteId;
 
@@ -94,15 +101,71 @@ const createRequisition = async (companyId, userId, data) => {
     include: { items: true },
   });
 
-  // TODO: integrar notificación al Director via SendGrid/Twilio
-  console.log('[requisitions] Nueva requisición creada:', {
-    consecutivo,
-    estado,
-    itemsCount: items.length,
-    itemsFueraAPU: items.filter((i) => i.codigo && !apuMap[i.codigo]).length,
+  // Notificación in-app a quienes aprueban
+  await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR'], {
+    tipo: 'REQUISICION_CREADA',
+    titulo: `Nueva requisición ${consecutivo}`,
+    mensaje: `${items.length} ítem(s) en ${project.nombre} — pendiente de aprobación`,
+    entidad: 'Requisition',
+    entidadId: requisition.id,
+    excludeUserId: userId,
   });
 
   return requisition;
+};
+
+// Análisis del agente: compara los ítems de la requisición contra el presupuesto APU
+const analyzeRequisitionBudget = async (companyId, requisitionId) => {
+  const req = await getRequisition(companyId, requisitionId);
+
+  const items = req.items.map((item) => {
+    if (!item.itemAPU) {
+      return {
+        id: item.id,
+        descripcion: item.descripcion,
+        cantidad: Number(item.cantidad),
+        unidad: item.unidad,
+        veredicto: 'FUERA_APU',
+        detalle: 'No corresponde a ningún ítem del presupuesto APU. Requiere justificación.',
+      };
+    }
+    const cantidad = Number(item.cantidad);
+    const saldoCantidad = Number(item.itemAPU.saldoCantidad);
+    const precioUnitario = Number(item.itemAPU.precioUnitario);
+    const valorEstimado = cantidad * precioUnitario;
+    const saldoValor = Number(item.itemAPU.saldoValor);
+    const excede = cantidad > saldoCantidad;
+
+    return {
+      id: item.id,
+      descripcion: item.descripcion,
+      cantidad,
+      unidad: item.unidad,
+      codigoAPU: item.itemAPU.codigo,
+      saldoCantidad,
+      valorEstimado,
+      saldoValor,
+      veredicto: excede ? 'EXCEDE_SALDO' : 'DENTRO_PRESUPUESTO',
+      detalle: excede
+        ? `Solicita ${cantidad} ${item.unidad} pero el saldo APU es ${saldoCantidad}. Excede en ${(cantidad - saldoCantidad).toFixed(2)}.`
+        : `Dentro del saldo APU (${saldoCantidad} ${item.unidad} disponibles).`,
+    };
+  });
+
+  const fueraAPU = items.filter((i) => i.veredicto === 'FUERA_APU').length;
+  const excedidos = items.filter((i) => i.veredicto === 'EXCEDE_SALDO').length;
+  const conforme = fueraAPU === 0 && excedidos === 0;
+
+  return {
+    requisitionId,
+    consecutivo: req.consecutivo,
+    estado: req.estado,
+    conforme,
+    resumen: conforme
+      ? 'Todos los insumos están de acuerdo al presupuesto APU del proyecto.'
+      : `${excedidos} ítem(s) exceden el saldo y ${fueraAPU} ítem(s) están fuera del APU.`,
+    items,
+  };
 };
 
 const approveRequisition = async (companyId, requisitionId, approverId) => {
@@ -114,21 +177,55 @@ const approveRequisition = async (companyId, requisitionId, approverId) => {
     );
   }
 
-  const updated = await prisma.requisition.update({
-    where: { id: requisitionId },
-    data: { estado: 'APROBADA', aprobadorId: approverId },
+  // Al aprobar se inicia el proceso de cotización: la requisición pasa a
+  // EN_COTIZACION y se crea la cotización en estado EN_BUSQUEDA
+  const [updated] = await prisma.$transaction([
+    prisma.requisition.update({
+      where: { id: requisitionId },
+      data: { estado: 'EN_COTIZACION', aprobadorId: approverId },
+    }),
+    prisma.quotation.create({
+      data: { requisitionId, estado: 'EN_BUSQUEDA' },
+    }),
+    prisma.auditLog.create({
+      data: {
+        companyId,
+        userId: approverId,
+        accion: 'APROBAR_REQUISICION',
+        entidad: 'Requisition',
+        entidadId: requisitionId,
+        metadata: { consecutivo: req.consecutivo },
+      },
+    }),
+  ]);
+
+  await notifications.notifyUser(companyId, req.solicitanteId, {
+    tipo: 'REQUISICION_APROBADA',
+    titulo: `Requisición ${req.consecutivo} aprobada`,
+    mensaje: 'Se inició el proceso de cotización (en búsqueda de proveedores).',
+    entidad: 'Requisition',
+    entidadId: requisitionId,
+  });
+  await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR'], {
+    tipo: 'COTIZACION_INICIADA',
+    titulo: `Cotización iniciada — ${req.consecutivo}`,
+    mensaje: 'La requisición aprobada entró en proceso de cotización.',
+    entidad: 'Requisition',
+    entidadId: requisitionId,
+    excludeUserId: approverId,
   });
 
-  await prisma.auditLog.create({
-    data: {
-      companyId,
-      userId: approverId,
-      accion: 'APROBAR_REQUISICION',
-      entidad: 'Requisition',
-      entidadId: requisitionId,
-      metadata: { consecutivo: req.consecutivo },
-    },
+  // Publicar al worker para que envíe WhatsApp a proveedores
+  const quotation = await prisma.quotation.findUnique({
+    where: { requisitionId },
+    select: { id: true },
   });
+  if (quotation) {
+    await publishCommand(redis, 'send_quote_requests', {
+      companyId,
+      quotationId: quotation.id,
+    }).catch(() => {}); // no bloquear si Redis no disponible
+  }
 
   return updated;
 };
@@ -155,7 +252,22 @@ const rejectRequisition = async (companyId, requisitionId, approverId, motivo) =
     },
   });
 
+  await notifications.notifyUser(companyId, req.solicitanteId, {
+    tipo: 'REQUISICION_RECHAZADA',
+    titulo: `Requisición ${req.consecutivo} rechazada`,
+    mensaje: motivo ? `Motivo: ${motivo}` : null,
+    entidad: 'Requisition',
+    entidadId: requisitionId,
+  });
+
   return updated;
 };
 
-module.exports = { listRequisitions, getRequisition, createRequisition, approveRequisition, rejectRequisition };
+module.exports = {
+  listRequisitions,
+  getRequisition,
+  createRequisition,
+  approveRequisition,
+  rejectRequisition,
+  analyzeRequisitionBudget,
+};

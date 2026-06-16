@@ -123,4 +123,67 @@ const confirmImport = async (sessionKey, confirmedSheets, companyId) => {
   }).filter(Boolean);
 };
 
-module.exports = { analyzeExcel, confirmImport };
+// Devuelve filas ya mapeadas para mostrar en grilla de selección (sin wizard)
+const previewExcel = async (buffer) => {
+  const sheets = parseExcel(buffer);
+  if (sheets.length === 0) {
+    throw Object.assign(new Error('El archivo no contiene datos'), { statusCode: 400 });
+  }
+
+  const groq = getGroq();
+  logger.info(`[excel.analyzer] previewExcel: ${sheets.length} hojas`);
+
+  const completion = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: buildGroqPrompt(sheets) }],
+    temperature: 0.1,
+    max_tokens: 1500,
+    response_format: { type: 'json_object' },
+  });
+
+  let analysis;
+  try {
+    analysis = JSON.parse(completion.choices[0].message.content);
+  } catch {
+    throw Object.assign(new Error('Error al interpretar la respuesta de IA'), { statusCode: 500 });
+  }
+
+  const items = [];
+  const sheetSummary = [];
+
+  for (const sheet of sheets) {
+    const groqSheet = (analysis.sheets || []).find((g) => g.nombre === sheet.nombre) || {};
+    const tipo = groqSheet.tipo || 'OTRO';
+    const col = groqSheet.columnas || {};
+
+    if (tipo === 'OTRO') {
+      sheetSummary.push({ nombre: sheet.nombre, tipo, total: 0, omitida: true });
+      continue;
+    }
+
+    let count = 0;
+    for (const row of sheet.filas) {
+      const descripcion = col.descripcion ? String(row[col.descripcion] ?? '').trim() : '';
+      if (!descripcion || descripcion.length < 2) continue;
+
+      const rawPrecio = col.precioUnitario ? String(row[col.precioUnitario] ?? '') : '';
+      items.push({
+        codigo:         col.codigo         ? String(row[col.codigo]         ?? '').trim() : '',
+        descripcion,
+        unidad:         col.unidad         ? (String(row[col.unidad]         ?? '').trim() || 'UND') : 'UND',
+        cantidad:       col.cantidad        ? (parseFloat(row[col.cantidad])       || 0) : 0,
+        precioUnitario: parseFloat(rawPrecio.replace(/[^0-9.-]/g, '')) || 0,
+        tipo,
+        _sheet: sheet.nombre,
+      });
+      count++;
+    }
+
+    sheetSummary.push({ nombre: sheet.nombre, tipo, total: count, razon: groqSheet.razon || '' });
+  }
+
+  logger.info(`[excel.analyzer] previewExcel: ${items.length} ítems extraídos`);
+  return { sheets: sheetSummary, items };
+};
+
+module.exports = { analyzeExcel, confirmImport, previewExcel };

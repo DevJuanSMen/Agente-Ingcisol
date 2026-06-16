@@ -4,6 +4,7 @@ import api from '../api/client';
 import { useProjectStore } from '../store/projectStore';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import AIBubble from '../components/AIBubble';
 
 const fmtM = (v) => {
   const n = Number(v || 0);
@@ -40,7 +41,8 @@ export default function Dashboard() {
 
     Promise.all([
       api.get('/tracking').then((r) => setTracking(r.data.data || [])).catch(() => setTracking([])),
-      api.get('/requisitions?estado=ENVIADA').then((r) => setRequisitions(r.data.data || [])).catch(() => setRequisitions([])),
+      api.get(`/requisitions?estado=ENVIADA,PENDIENTE_JUST${activeProject ? `&projectId=${activeProject.id}` : ''}`)
+        .then((r) => setRequisitions(r.data.data || [])).catch(() => setRequisitions([])),
       api.get(`/delegations/stats${qs}`).then((r) => setDelegStats(r.data.data)).catch(() => setDelegStats(null)),
       activeProject
         ? api.get(`/projects/${activeProject.id}/dashboard`).then((r) => setProjectDash(r.data.data)).catch(() => setProjectDash(null))
@@ -96,6 +98,7 @@ export default function Dashboard() {
             ))}
           </div>
         )}
+        <AIBubble />
       </div>
     );
   }
@@ -220,13 +223,20 @@ export default function Dashboard() {
         <Card title="Requisiciones pendientes de aprobación">
           <div className="divide-y divide-slate-100">
             {requisitions.slice(0, 5).map((req) => (
-              <div key={req.id} className="flex items-center justify-between py-3">
+              <button
+                key={req.id}
+                onClick={() => navigate('/requisitions')}
+                className="w-full flex items-center justify-between py-3 text-left hover:bg-slate-50 transition-colors rounded-lg px-2 -mx-2"
+              >
                 <div>
                   <span className="text-sm font-medium text-slate-700">{req.consecutivo}</span>
                   <span className="text-xs text-slate-400 ml-2">{req.project?.nombre}</span>
+                  {req.estado === 'PENDIENTE_JUST' && (
+                    <span className="text-xs text-orange-600 ml-2">Pendiente justificación</span>
+                  )}
                 </div>
                 <span className="text-xs text-slate-500">{req.solicitante?.nombre}</span>
-              </div>
+              </button>
             ))}
           </div>
         </Card>
@@ -238,6 +248,8 @@ export default function Dashboard() {
           <p className="text-sm">Todo al día — sin alertas ni pendientes</p>
         </div>
       )}
+
+      <AIBubble />
     </div>
   );
 }

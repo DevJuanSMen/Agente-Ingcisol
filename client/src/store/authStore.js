@@ -19,6 +19,16 @@ export const useAuthStore = create(
         return data.data.user;
       },
 
+      register: async (payload) => {
+        const { data } = await api.post('/auth/register', payload);
+        set({
+          token: data.data.token,
+          user: data.data.user,
+          isAuthenticated: true,
+        });
+        return data.data.user;
+      },
+
       logout: () => {
         set({ user: null, token: null, isAuthenticated: false });
       },

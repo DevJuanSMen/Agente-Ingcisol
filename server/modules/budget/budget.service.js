@@ -80,31 +80,39 @@ const crossReference = async (companyId, projectId, sheet1Id, sheet2Id, keyCol1,
 
 const importSheetAsAPU = async (companyId, projectId, sheetId, colMap) => {
   const sheet = await getSheet(companyId, projectId, sheetId);
-  const items = sheet.filas
-    .map((row) => ({
-      codigo: String(row[colMap.codigo] ?? '').trim(),
-      descripcion: String(row[colMap.descripcion] ?? '').trim(),
-      unidad: String(row[colMap.unidad] ?? 'GL').trim() || 'GL',
-      cantidad: parseFloat(row[colMap.cantidad]) || 0,
-      precioUnitario: parseFloat(row[colMap.precioUnitario]) || 0,
-    }))
-    .filter((i) => i.codigo && i.descripcion);
 
-  await prisma.$transaction([
-    prisma.itemAPU.deleteMany({ where: { projectId } }),
-    prisma.itemAPU.createMany({
+  // Deduplicar por codigo: si el Excel tiene filas con el mismo código, gana la última
+  const seen = new Map();
+  for (const row of sheet.filas) {
+    const codigo      = String(row[colMap.codigo]      ?? '').trim();
+    const descripcion = String(row[colMap.descripcion] ?? '').trim();
+    if (!codigo || !descripcion) continue;
+    seen.set(codigo, {
+      codigo,
+      descripcion,
+      unidad:         String(row[colMap.unidad] ?? 'GL').trim() || 'GL',
+      cantidad:       parseFloat(row[colMap.cantidad])       || 0,
+      precioUnitario: parseFloat(row[colMap.precioUnitario]) || 0,
+    });
+  }
+  const items = [...seen.values()];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.itemAPU.deleteMany({ where: { projectId } });
+    await tx.itemAPU.createMany({
       data: items.map((i) => ({
         projectId,
-        codigo: i.codigo,
-        descripcion: i.descripcion,
-        unidad: i.unidad,
-        cantidad: i.cantidad,
+        codigo:         i.codigo,
+        descripcion:    i.descripcion,
+        unidad:         i.unidad,
+        cantidad:       i.cantidad,
         precioUnitario: i.precioUnitario,
-        saldoCantidad: i.cantidad,
-        saldoValor: i.cantidad * i.precioUnitario,
+        saldoCantidad:  i.cantidad,
+        saldoValor:     i.cantidad * i.precioUnitario,
       })),
-    }),
-  ]);
+    });
+  });
+
   return prisma.itemAPU.count({ where: { projectId } });
 };
 

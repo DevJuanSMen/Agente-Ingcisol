@@ -17,6 +17,41 @@ const signToken = (user) =>
     { expiresIn: EXPIRES_IN }
   );
 
+// Registro inicial: crea la empresa y su primer usuario como Director
+const register = async ({ razonSocial, nit, nombre, email, password, whatsapp }) => {
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
+    throw Object.assign(new Error('El email ya está registrado'), { statusCode: 409 });
+  }
+  const existingCompany = await prisma.company.findUnique({ where: { nit } });
+  if (existingCompany) {
+    throw Object.assign(new Error('Ya existe una empresa registrada con ese NIT'), { statusCode: 409 });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  const user = await prisma.$transaction(async (tx) => {
+    const company = await tx.company.create({
+      data: { razonSocial, nit },
+    });
+    return tx.user.create({
+      data: {
+        companyId: company.id,
+        nombre,
+        email,
+        passwordHash,
+        whatsapp: whatsapp || null,
+        rol: 'DIRECTOR',
+      },
+      include: { company: { select: { razonSocial: true } } },
+    });
+  });
+
+  const token = signToken(user);
+  const { passwordHash: _ph, ...safeUser } = user;
+  return { token, user: safeUser };
+};
+
 const login = async (email, password) => {
   const user = await prisma.user.findUnique({
     where: { email },
@@ -55,4 +90,4 @@ const me = async (userId) => {
   return safeUser;
 };
 
-module.exports = { login, refreshToken, me };
+module.exports = { register, login, refreshToken, me };

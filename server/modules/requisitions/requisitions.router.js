@@ -15,6 +15,19 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// Análisis del agente: insumos vs presupuesto APU
+router.get('/:id/analysis', async (req, res, next) => {
+  try {
+    const analysis = await requisitionsService.analyzeRequisitionBudget(
+      req.user.companyId,
+      req.params.id
+    );
+    ok(res, analysis);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id', async (req, res, next) => {
   try {
     const requisition = await requisitionsService.getRequisition(req.user.companyId, req.params.id);

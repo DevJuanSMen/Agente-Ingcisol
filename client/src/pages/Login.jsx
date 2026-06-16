@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import Button from '../components/ui/Button';
 
@@ -39,7 +39,10 @@ export default function Login() {
           <h1 className="text-3xl font-bold text-slate-900">
             PROCURA <span className="text-primary">AI</span>
           </h1>
-          <p className="text-slate-500 text-sm mt-2">Gestión inteligente de compras</p>
+          <p className="text-slate-500 text-sm mt-2">Tu agente de compras 24/7</p>
+          <p className="text-xs font-semibold text-slate-400 tracking-widest uppercase mt-3">
+            INGCISOL Ingeniería y Construcción
+          </p>
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
@@ -84,6 +87,13 @@ export default function Login() {
               Ingresar
             </Button>
           </form>
+
+          <p className="text-center text-sm text-slate-500 mt-5">
+            ¿Primera vez?{' '}
+            <Link to="/register" className="text-primary font-medium hover:underline">
+              Registra tu empresa
+            </Link>
+          </p>
         </div>
 
         <p className="text-center text-xs text-slate-400 mt-6">

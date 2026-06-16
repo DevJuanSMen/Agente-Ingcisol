@@ -32,13 +32,15 @@ const getProject = async (companyId, projectId) => {
 };
 
 const createProject = async (companyId, data) => {
-  const { nombre, contratoNo, entidad, descripcion, valor, inicio, fin, icono, color, estado } = data;
+  const { nombre, contratoNo, entidad, interventor, ciudad, descripcion, valor, inicio, fin, icono, color, estado } = data;
   return prisma.project.create({
     data: {
       companyId,
       nombre,
       contratoNo,
       entidad,
+      interventor,
+      ciudad,
       descripcion,
       valor: valor ? parseFloat(valor) : null,
       inicio: inicio ? new Date(inicio) : null,
@@ -53,13 +55,15 @@ const createProject = async (companyId, data) => {
 
 const updateProject = async (companyId, projectId, data) => {
   await getProject(companyId, projectId);
-  const { nombre, contratoNo, entidad, descripcion, valor, inicio, fin, icono, color, estado } = data;
+  const { nombre, contratoNo, entidad, interventor, ciudad, descripcion, valor, inicio, fin, icono, color, estado } = data;
   return prisma.project.update({
     where: { id: projectId },
     data: {
       nombre,
       contratoNo,
       entidad,
+      interventor,
+      ciudad,
       descripcion,
       valor: valor !== undefined ? (valor ? parseFloat(valor) : null) : undefined,
       inicio: inicio !== undefined ? (inicio ? new Date(inicio) : null) : undefined,
@@ -140,6 +144,8 @@ const getProjectDashboard = async (companyId, projectId) => {
       nombre: project.nombre,
       contratoNo: project.contratoNo,
       entidad: project.entidad,
+      interventor: project.interventor,
+      ciudad: project.ciudad,
       valor: project.valor,
       inicio: project.inicio,
       fin: project.fin,

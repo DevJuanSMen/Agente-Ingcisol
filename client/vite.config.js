@@ -8,7 +8,9 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://api:4000',
+        // En Docker el compose define VITE_API_TARGET=http://api:4000;
+        // en local se usa la API expuesta en localhost:4000
+        target: process.env.VITE_API_TARGET || 'http://localhost:4000',
         changeOrigin: true,
       },
     },

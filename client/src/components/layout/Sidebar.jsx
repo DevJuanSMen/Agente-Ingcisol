@@ -118,9 +118,12 @@ export default function Sidebar({ open, onClose }) {
           ${open ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
       >
         {/* Logo */}
-        <div className="h-14 flex items-center px-5 border-b border-slate-700 flex-shrink-0">
-          <span className="text-base font-bold text-white tracking-tight">
+        <div className="h-14 flex flex-col justify-center px-5 border-b border-slate-700 flex-shrink-0">
+          <span className="text-base font-bold text-white tracking-tight leading-tight">
             PROCURA <span className="text-primary">AI</span>
+          </span>
+          <span className="text-[10px] text-slate-400 leading-tight">
+            Tu agente de compras 24/7
           </span>
         </div>
 

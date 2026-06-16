@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { useProjectStore } from '../../store/projectStore';
+import NotificationBell from './NotificationBell';
 
 export default function Topbar({ onMenuClick }) {
   const user = useAuthStore((s) => s.user);
@@ -47,8 +48,9 @@ export default function Topbar({ onMenuClick }) {
         )}
       </button>
 
-      {/* Avatar */}
+      {/* Notificaciones y avatar */}
       <div className="flex items-center gap-3 flex-shrink-0">
+        <NotificationBell />
         <span className="text-xs text-slate-500 hidden sm:block max-w-[120px] truncate">{user?.email}</span>
         <div
           className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-xs font-semibold cursor-default select-none"

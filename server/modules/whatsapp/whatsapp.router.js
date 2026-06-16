@@ -3,16 +3,24 @@ const { verifyToken } = require('../../shared/middleware/auth');
 const { requireRole } = require('../../shared/middleware/rbac');
 const { ok } = require('../../shared/utils/response');
 const redis = require('../../shared/redis');
+const { publishCommand } = require('./bot.ipc');
 
 router.use(verifyToken);
 router.use(requireRole('DIRECTOR', 'APOYO_DIRECTOR'));
 
+const keys = (companyId) => ({
+  qr: `whatsapp:${companyId}:qr`,
+  status: `whatsapp:${companyId}:status`,
+  enabled: `whatsapp:${companyId}:enabled`,
+});
+
 router.get('/status', async (req, res, next) => {
   try {
+    const k = keys(req.user.companyId);
     const [enabled, status, qr] = await Promise.all([
-      redis.get('whatsapp:enabled'),
-      redis.get('whatsapp:status'),
-      redis.get('whatsapp:qr'),
+      redis.get(k.enabled),
+      redis.get(k.status),
+      redis.get(k.qr),
     ]);
     ok(res, {
       enabled: enabled === '1',
@@ -22,16 +30,32 @@ router.get('/status', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Inicia la sesión WhatsApp de esta empresa
+router.post('/connect', async (req, res, next) => {
+  try {
+    await publishCommand(redis, 'init', { companyId: req.user.companyId });
+    ok(res, { message: 'Inicializando conexión WhatsApp...' });
+  } catch (err) { next(err); }
+});
+
+// Desconecta y destruye la sesión
+router.post('/disconnect', async (req, res, next) => {
+  try {
+    await publishCommand(redis, 'destroy', { companyId: req.user.companyId });
+    ok(res, { message: 'Desconectando WhatsApp...' });
+  } catch (err) { next(err); }
+});
+
 router.post('/enable', async (req, res, next) => {
   try {
-    await redis.set('whatsapp:enabled', '1');
+    await redis.set(keys(req.user.companyId).enabled, '1');
     ok(res, { enabled: true });
   } catch (err) { next(err); }
 });
 
 router.post('/disable', async (req, res, next) => {
   try {
-    await redis.set('whatsapp:enabled', '0');
+    await redis.set(keys(req.user.companyId).enabled, '0');
     ok(res, { enabled: false });
   } catch (err) { next(err); }
 });

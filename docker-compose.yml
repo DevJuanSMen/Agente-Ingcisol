@@ -28,6 +28,7 @@ services:
       - "3000:3000"
     environment:
       - VITE_API_URL=/api
+      - VITE_API_TARGET=http://api:4000
     networks:
       - procura-net
 

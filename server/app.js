@@ -19,6 +19,7 @@ const budgetRouter = require('./modules/budget/budget.router');
 const delegationsRouter = require('./modules/delegations/delegations.router');
 const basicPricesRouter = require('./modules/basicprices/basicprices.router');
 const whatsappRouter = require('./modules/whatsapp/whatsapp.router');
+const assistantRouter = require('./modules/assistant/assistant.router');
 
 const app = express();
 
@@ -55,6 +56,7 @@ app.use('/api/budget', budgetRouter);
 app.use('/api/delegations', delegationsRouter);
 app.use('/api/basic-prices', basicPricesRouter);
 app.use('/api/whatsapp', whatsappRouter);
+app.use('/api/assistant', assistantRouter);
 
 // Handler de errores global
 app.use((err, req, res, next) => {

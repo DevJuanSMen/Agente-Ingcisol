@@ -7,10 +7,16 @@ const getCompany = async (companyId) => {
 };
 
 const updateCompany = async (companyId, data) => {
-  const { razonSocial, nit, telefono, direccion, ciudad } = data;
+  const {
+    razonSocial, nit, representanteLegal, emailCorporativo,
+    telefono, direccion, ciudad, banco, tipoCuenta, numeroCuenta,
+  } = data;
   return prisma.company.update({
     where: { id: companyId },
-    data: { razonSocial, nit, telefono, direccion, ciudad },
+    data: {
+      razonSocial, nit, representanteLegal, emailCorporativo,
+      telefono, direccion, ciudad, banco, tipoCuenta, numeroCuenta,
+    },
   });
 };
 

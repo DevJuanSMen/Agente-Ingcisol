@@ -4,9 +4,12 @@ const listSuppliers = async (companyId, filters = {}) => {
   const where = { companyId };
   if (filters.segmento) where.segmento = filters.segmento;
   if (filters.homologado !== undefined) where.homologado = filters.homologado === 'true';
+  // projectId: proveedores del proyecto + los globales de la empresa
+  if (filters.projectId) where.OR = [{ projectId: filters.projectId }, { projectId: null }];
 
   return prisma.supplier.findMany({
     where,
+    include: { project: { select: { id: true, nombre: true } } },
     orderBy: { nombre: 'asc' },
   });
 };
@@ -26,6 +29,11 @@ const createSupplier = async (companyId, data) => {
   });
 };
 
+const deleteSupplier = async (companyId, supplierId) => {
+  await getSupplier(companyId, supplierId);
+  return prisma.supplier.delete({ where: { id: supplierId } });
+};
+
 const updateSupplier = async (companyId, supplierId, data) => {
   await getSupplier(companyId, supplierId);
   const { nombre, nit, ciudad, segmento, whatsapp, email, homologado } = data;
@@ -35,10 +43,11 @@ const updateSupplier = async (companyId, supplierId, data) => {
   });
 };
 
-const importSuppliers = async (companyId, suppliers) => {
+const importSuppliers = async (companyId, suppliers, projectId = null) => {
   const created = await prisma.supplier.createMany({
     data: suppliers.map((s) => ({
       companyId,
+      projectId,
       nombre: String(s.nombre || s.name || ''),
       nit: s.nit ? String(s.nit) : null,
       ciudad: s.ciudad || s.city || null,
@@ -53,4 +62,4 @@ const importSuppliers = async (companyId, suppliers) => {
   return created.count;
 };
 
-module.exports = { listSuppliers, getSupplier, createSupplier, updateSupplier, importSuppliers };
+module.exports = { listSuppliers, getSupplier, createSupplier, updateSupplier, deleteSupplier, importSuppliers };
