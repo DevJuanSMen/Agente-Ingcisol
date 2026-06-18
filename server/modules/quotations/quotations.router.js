@@ -59,7 +59,8 @@ router.put('/:id/winner', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
       req.user.companyId,
       req.params.id,
       supplierId,
-      fechaEntregaPactada
+      fechaEntregaPactada,
+      req.user.id
     );
     ok(res, result);
   } catch (err) { next(err); }

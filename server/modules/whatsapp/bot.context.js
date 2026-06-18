@@ -1,5 +1,7 @@
 const prisma = require('../../shared/db');
 const { logger } = require('../../shared/utils/logger');
+const apuService = require('../apu/apu.service');
+const requisitionsService = require('../requisitions/requisitions.service');
 
 const fmt = (n) =>
   new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(Number(n) || 0);
@@ -515,12 +517,119 @@ ${context}`;
   }
 };
 
+// ── Creación de requisición por lenguaje natural ─────────────────────────────
+
+// Palabras que indican intención de solicitar materiales
+const REQ_INTENT_RE = /\b(necesito|necesitamos|requiero|requerimos|solicito|solicitamos|pido|pedir|hace falta|hacen falta|requisici[oó]n|me mandan|env[ií]en|comprar|compra de|para obra)\b/i;
+
+const tryCreateRequisition = async (text, companyId, user) => {
+  const project = await prisma.project.findFirst({ where: { companyId, activo: true } });
+  if (!project) return 'No hay un proyecto activo. Pide al director que active un proyecto antes de crear requisiciones.';
+
+  // 1. Extraer ítems con IA
+  let extracted = [];
+  try {
+    const { getGroq } = require('../../shared/utils/groq');
+    const groq = getGroq();
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `Eres un asistente de requisiciones de obra en Colombia. El usuario solicita materiales/insumos.
+Extrae cada ítem solicitado. Responde SOLO JSON válido:
+{"items":[{"descripcion":"cemento gris","cantidad":50,"unidad":"bulto"}],"prioridad":"ALTA|MEDIA|BAJA"}
+Si no menciona cantidad usa 1. Si no menciona unidad usa "UND". Si no menciona prioridad usa "MEDIA".
+Si el mensaje NO es una solicitud de materiales, responde {"items":[]}.`,
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0.1,
+      max_tokens: 600,
+      response_format: { type: 'json_object' },
+    });
+    const parsed = JSON.parse(completion.choices[0].message.content);
+    extracted = Array.isArray(parsed.items) ? parsed.items : [];
+    var prioridad = ['ALTA', 'MEDIA', 'BAJA'].includes(parsed.prioridad) ? parsed.prioridad : 'MEDIA';
+  } catch (err) {
+    logger.error('[bot.context] Error extrayendo requisición:', err.message);
+    return null; // dejar que caiga al fallback general
+  }
+
+  if (extracted.length === 0) return null; // no era una requisición → fallback
+
+  // 2. Casar cada ítem contra el APU / insumos del proyecto
+  const items = [];
+  const resumen = [];
+  for (const ex of extracted) {
+    const matches = await apuService.findBudgetMatches(companyId, ex.descripcion, 1);
+    const best = matches[0];
+    if (best) {
+      items.push({
+        descripcion: best.descripcion,
+        cantidad: Number(ex.cantidad) || 1,
+        unidad: ex.unidad || best.unidad || 'UND',
+        codigo: best.codigo,
+        itemApuId: best.itemApuId,
+        itemApuInsumoId: best.itemApuInsumoId || null,
+      });
+      const etiqueta = best.type === 'INSUMO' ? `insumo de ${best.codigo}` : `APU ${best.codigo}`;
+      resumen.push(`✅ ${ex.cantidad || 1} ${ex.unidad || best.unidad} *${best.descripcion}* — ${etiqueta} (${fmt(best.precioUnitario)})`);
+    } else {
+      // No casó: ítem libre, fuera de APU
+      items.push({
+        descripcion: ex.descripcion,
+        cantidad: Number(ex.cantidad) || 1,
+        unidad: ex.unidad || 'UND',
+        codigo: '',
+        itemApuId: null,
+        itemApuInsumoId: null,
+      });
+      resumen.push(`⚠️ ${ex.cantidad || 1} ${ex.unidad || ''} *${ex.descripcion}* — no está en el APU (requiere justificación)`);
+    }
+  }
+
+  // 3. Crear la requisición
+  try {
+    const req = await requisitionsService.createRequisition(companyId, user.id, {
+      projectId: project.id,
+      items,
+      prioridad,
+      canal: 'WHATSAPP',
+    });
+    const fueraApu = items.filter((i) => !i.itemApuId).length;
+    return (
+      `📋 *Requisición ${req.consecutivo} creada*\n\n` +
+      `${resumen.join('\n')}\n\n` +
+      `Estado: *${req.estado.replace(/_/g, ' ')}*` +
+      (fueraApu > 0
+        ? `\n\n⚠️ ${fueraApu} ítem(s) fuera del APU. El director debe justificarlos antes de aprobar.`
+        : `\n\n✅ Todos los ítems están en el presupuesto. Pendiente de aprobación del director.`)
+    );
+  } catch (err) {
+    logger.error('[bot.context] Error creando requisición:', err.message);
+    return `No pude crear la requisición: ${err.message}`;
+  }
+};
+
 // ── Entrada principal ────────────────────────────────────────────────────────
 
-const buildResponse = async (text, companyId, rol) => {
+const buildResponse = async (text, companyId, user) => {
+  const rol = typeof user === 'string' ? user : user?.rol;
   const t = text.toLowerCase().trim();
+
+  // 1. Comandos exactos / consultas
   const commandResult = await handleCommand(t, companyId, rol);
   if (commandResult !== null) return commandResult;
+
+  // 2. Intención de crear requisición (solo usuarios internos con id)
+  const userId = typeof user === 'object' ? user?.id : null;
+  if (userId && REQ_INTENT_RE.test(t)) {
+    const reqResult = await tryCreateRequisition(text, companyId, { id: userId, rol });
+    if (reqResult !== null) return reqResult;
+  }
+
+  // 3. Fallback IA
   return groqFallback(text, companyId, { rol });
 };
 

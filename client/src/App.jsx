@@ -20,6 +20,8 @@ import QuotationList from './pages/Quotations/QuotationList';
 import OrderList from './pages/Orders/OrderList';
 import TrackingBoard from './pages/Tracking/TrackingBoard';
 import APUTree from './pages/APU/APUTree';
+import BasicPriceList from './pages/BasicPrices/BasicPriceList';
+import MasterImport from './pages/Import/MasterImport';
 import SupplierList from './pages/Suppliers/SupplierList';
 import CompanyProfile from './pages/Company/CompanyProfile';
 import UsersSettings from './pages/Settings/UsersSettings';
@@ -63,7 +65,9 @@ export default function App() {
           <Route path="quotations" element={<QuotationList />} />
           <Route path="orders" element={<OrderList />} />
           <Route path="tracking" element={<TrackingBoard />} />
+          <Route path="import" element={<MasterImport />} />
           <Route path="apu" element={<APUTree />} />
+          <Route path="basic-prices" element={<BasicPriceList />} />
           <Route path="suppliers" element={<SupplierList />} />
           <Route path="company" element={<CompanyProfile />} />
           <Route path="settings/users" element={<UsersSettings />} />

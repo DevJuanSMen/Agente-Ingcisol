@@ -125,16 +125,8 @@ async function sendPoNotification(companyId, orderId) {
       proveedor: true,
       quotation: {
         include: {
-          requisition: {
-            include: {
-              project: { select: { nombre: true } },
-              items: true,
-            },
-          },
-          items: {
-            where: { supplierId: undefined }, // se sobreescribe abajo
-            include: { itemAPU: true },
-          },
+          requisition: { include: { project: { select: { nombre: true } } } },
+          items: { include: { itemAPU: true } },
         },
       },
     },
@@ -154,14 +146,21 @@ async function sendPoNotification(companyId, orderId) {
     ? new Date(order.fechaEntregaPactada).toLocaleDateString('es-CO')
     : 'Por coordinar';
 
+  // Detalle de ítems que le compramos a este proveedor
+  const winnerItems = (order.quotation.items || []).filter((qi) => qi.supplierId === order.supplierId);
+  const itemLines = winnerItems
+    .map((qi) => `• ${qi.descripcion || qi.itemAPU?.descripcion || 'Ítem'} — ${fmtCOP(qi.precioUnitario)}`)
+    .join('\n');
+
   const msg =
-    `📦 *PROCURA AI — Orden de Compra Emitida*\n\n` +
+    `🎉 *PROCURA AI — ¡Fue seleccionado como proveedor!*\n\n` +
     `Estimado(a) *${supplier.nombre}*,\n\n` +
-    `Se ha emitido la siguiente Orden de Compra:\n\n` +
+    `Nos complace informarle que su cotización fue la *ganadora*. Se realizará la compra con usted mediante la siguiente Orden de Compra:\n\n` +
     `📋 OC: *${order.consecutivo}*\n` +
+    (itemLines ? `${itemLines}\n` : '') +
     `💰 Monto total: *${fmtCOP(order.montoTotal)}*\n` +
     `📅 Fecha de entrega pactada: *${fechaEntrega}*\n\n` +
-    `Por favor confirme recibo de esta orden.\n` +
+    `Por favor confirme recibo de esta orden y la fecha de entrega en obra.\n` +
     `_PROCURA AI — Sistema de Gestión de Procura_`;
 
   try {

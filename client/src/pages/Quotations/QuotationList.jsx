@@ -166,49 +166,66 @@ function WinnerModal({ quotationId, supplier, onClose, onSuccess }) {
 }
 
 // ── Comparative Table ───────────────────────────────────────────────────────
-function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onRefresh }) {
-  // Agrupar items por proveedor
-  const supplierMap = {};
-  for (const item of quotation.items || []) {
-    if (!item.supplierId) continue;
-    if (!supplierMap[item.supplierId]) {
-      supplierMap[item.supplierId] = { id: item.supplierId, nombre: item.supplier?.nombre || '?', items: [] };
-    }
-    supplierMap[item.supplierId].items.push(item);
-  }
-  const suppliers = Object.values(supplierMap);
+function ComparativeTable({ quotation, onWinnerClick, onInviteClick }) {
+  const comp = quotation.comparison || { rows: [], suppliers: [], favoritoSupplierId: null };
+  const rows = comp.rows || [];
 
-  // Lista canónica de ítems (desde la requisición)
-  const reqItems = quotation.requisition?.items || [];
+  // Proveedores que aparecen en el comparativo
+  const suppliers = comp.suppliers || [];
+  const supName = (id) => suppliers.find((s) => s.id === id)?.nombre || '?';
 
-  // Calcular total por proveedor
-  const totals = {};
-  for (const sup of suppliers) {
-    totals[sup.id] = sup.items.reduce((acc, it) => acc + Number(it.precioUnitario || 0) * Number(it.cantidad || 1), 0);
-  }
+  const isApproved = quotation.estado === 'APROBADA';
+  const winnerId   = quotation.proveedorGanadorId;
+  const favId      = comp.favoritoSupplierId;
 
-  const isApproved  = quotation.estado === 'APROBADA';
-  const winnerId    = quotation.proveedorGanadorId;
-
-  // Invites
   const invited   = (quotation.invites || []).filter((i) => i.enviado).length;
   const responded = (quotation.invites || []).filter((i) => i.respondido).length;
+
+  // precio cotizado de un proveedor para una fila
+  const quoteFor = (row, supId) => row.quotes.find((q) => q.supplierId === supId) || null;
 
   return (
     <div className="space-y-4">
       {/* Stats bar */}
-      <div className="flex items-center gap-4 text-xs text-slate-500">
-        <span>{invited} proveedor(es) invitados</span>
+      <div className="flex items-center gap-4 text-xs text-slate-500 flex-wrap">
+        <span>{invited} invitados</span>
         <span className="text-slate-300">|</span>
-        <span>{responded} respuesta(s) recibidas</span>
+        <span>{responded} respuestas</span>
         <span className="text-slate-300">|</span>
-        <span>{suppliers.length} cotizaciones en tabla</span>
+        <span>{suppliers.length} cotizaciones</span>
         {!isApproved && (
           <Button size="sm" variant="secondary" className="ml-auto" onClick={onInviteClick}>
             + Invitar proveedores
           </Button>
         )}
       </div>
+
+      {/* Recomendación de favorito */}
+      {!isApproved && favId && suppliers.length > 0 && (
+        <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+          <span className="text-lg flex-shrink-0">⭐</span>
+          <div className="text-sm text-amber-800">
+            <p className="font-semibold">Posible favorito: {supName(favId)}</p>
+            <p className="text-xs mt-0.5 text-amber-700">
+              Mejor total con la cobertura más amplia de ítems: <strong>{fmtCOP(comp.favoritoTotal)}</strong>
+              {comp.refTotal > 0 && (
+                <> · Referencia APU: {fmtCOP(comp.refTotal)}
+                  {comp.ahorroVsApu != null && (
+                    <span className={comp.ahorroVsApu >= 0 ? 'text-green-700' : 'text-red-600'}>
+                      {' '}({comp.ahorroVsApu >= 0 ? 'ahorro' : 'sobrecosto'} {fmtCOP(Math.abs(comp.ahorroVsApu))})
+                    </span>
+                  )}
+                </>
+              )}
+            </p>
+          </div>
+          {!isApproved && (
+            <Button size="sm" className="ml-auto flex-shrink-0" onClick={() => onWinnerClick({ id: favId, nombre: supName(favId) })}>
+              Elegir favorito
+            </Button>
+          )}
+        </div>
+      )}
 
       {suppliers.length === 0 ? (
         <div className="text-center py-8 text-sm text-slate-400">
@@ -219,108 +236,83 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onRefresh }
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 w-64">Ítem</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 w-56">Ítem</th>
+                <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 min-w-28 bg-slate-100">
+                  Ref. APU
+                </th>
                 {suppliers.map((sup) => (
                   <th key={sup.id} className={`px-4 py-3 text-center text-xs font-semibold min-w-36 ${
-                    winnerId === sup.id ? 'bg-green-50 text-green-700' : 'text-slate-600'
+                    winnerId === sup.id ? 'bg-green-50 text-green-700' : sup.id === favId ? 'bg-amber-50 text-amber-700' : 'text-slate-600'
                   }`}>
                     {sup.nombre}
-                    {winnerId === sup.id && (
-                      <span className="block text-xs text-green-500 font-normal">Ganador</span>
-                    )}
+                    {winnerId === sup.id && <span className="block text-xs text-green-500 font-normal">Ganador</span>}
+                    {winnerId !== sup.id && sup.id === favId && <span className="block text-xs text-amber-500 font-normal">⭐ Favorito</span>}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {reqItems.map((ri, idx) => {
-                // Buscar el precio de este ítem para cada proveedor
-                const getPrecio = (supId) => {
-                  const sup = supplierMap[supId];
-                  if (!sup) return null;
-                  // Intentar matchear por descripcion o itemApuId
-                  const match = sup.items.find(
-                    (it) =>
-                      it.descripcion?.toLowerCase() === ri.descripcion?.toLowerCase() ||
-                      (ri.itemApuId && it.itemApuId === ri.itemApuId)
-                  );
-                  return match || sup.items[idx] || null;
-                };
+              {rows.map((row) => (
+                <tr key={row.reqItemId} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-3">
+                    <p className="text-sm text-slate-700">{row.descripcion}</p>
+                    <p className="text-xs text-slate-400">
+                      {Number(row.cantidad).toLocaleString('es-CO')} {row.unidad}
+                      {row.codigoAPU && <span className="ml-1 font-mono text-slate-400">· {row.codigoAPU}</span>}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3 text-center bg-slate-50/60">
+                    {row.refPrice != null ? (
+                      <span className="text-xs text-slate-500">{fmtCOP(row.refPrice)}</span>
+                    ) : <span className="text-slate-300">—</span>}
+                  </td>
+                  {suppliers.map((sup) => {
+                    const q = quoteFor(row, sup.id);
+                    const isMin = q && row.mejorSupplierId === sup.id && row.quotes.length > 1;
+                    return (
+                      <td key={sup.id} className={`px-4 py-3 text-center ${winnerId === sup.id ? 'bg-green-50/50' : sup.id === favId ? 'bg-amber-50/40' : ''}`}>
+                        {q ? (
+                          <div>
+                            <span className={`text-sm font-semibold ${q.excedeApu ? 'text-red-600' : isMin ? 'text-green-700' : 'text-slate-700'}`}>
+                              {fmtCOP(q.precioUnitario)}
+                            </span>
+                            {q.excedeApu && <span className="block text-xs text-red-500">+ APU</span>}
+                            {isMin && !q.excedeApu && <span className="block text-xs text-green-500">más económico</span>}
+                            {q.tiempoEntrega > 0 && <span className="block text-xs text-slate-400">{q.tiempoEntrega} días</span>}
+                          </div>
+                        ) : <span className="text-slate-300">—</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
 
-                // Precio mínimo para resaltar
-                const prices = suppliers.map((s) => {
-                  const it = getPrecio(s.id);
-                  return it ? Number(it.precioUnitario || 0) : Infinity;
-                });
-                const minPrice = Math.min(...prices.filter((p) => p < Infinity));
-
-                return (
-                  <tr key={ri.id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3">
-                      <p className="text-sm text-slate-700">{ri.descripcion}</p>
-                      <p className="text-xs text-slate-400">
-                        {Number(ri.cantidad).toLocaleString('es-CO')} {ri.unidad}
-                      </p>
-                    </td>
-                    {suppliers.map((sup) => {
-                      const it = getPrecio(sup.id);
-                      const price = it ? Number(it.precioUnitario || 0) : null;
-                      const isMin = price !== null && price === minPrice && price > 0;
-                      return (
-                        <td
-                          key={sup.id}
-                          className={`px-4 py-3 text-center ${
-                            winnerId === sup.id ? 'bg-green-50/50' : ''
-                          }`}
-                        >
-                          {it ? (
-                            <div>
-                              <span className={`text-sm font-semibold ${isMin ? 'text-green-700' : 'text-slate-700'}`}>
-                                {fmtCOP(price)}
-                              </span>
-                              {isMin && suppliers.length > 1 && (
-                                <span className="block text-xs text-green-500">más económico</span>
-                              )}
-                              {it.tiempoEntrega && (
-                                <span className="block text-xs text-slate-400">{it.tiempoEntrega}</span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-
-              {/* Fila de totales */}
+              {/* Totales */}
               <tr className="bg-slate-50 font-semibold border-t-2 border-slate-200">
                 <td className="px-4 py-3 text-sm text-slate-700">Total estimado</td>
+                <td className="px-4 py-3 text-center text-xs text-slate-500 bg-slate-100">{fmtCOP(comp.refTotal)}</td>
                 {suppliers.map((sup) => {
-                  const isWinner = winnerId === sup.id;
-                  const isLowest = totals[sup.id] === Math.min(...Object.values(totals));
+                  const lowest = Math.min(...suppliers.map((s) => s.total));
+                  const isLowest = sup.total === lowest && suppliers.length > 1;
                   return (
-                    <td key={sup.id} className={`px-4 py-3 text-center ${isWinner ? 'bg-green-50' : ''}`}>
-                      <span className={`text-sm font-bold ${isLowest && suppliers.length > 1 ? 'text-green-700' : 'text-slate-700'}`}>
-                        {fmtCOP(totals[sup.id])}
-                      </span>
+                    <td key={sup.id} className={`px-4 py-3 text-center ${winnerId === sup.id ? 'bg-green-50' : sup.id === favId ? 'bg-amber-50' : ''}`}>
+                      <span className={`text-sm font-bold ${isLowest ? 'text-green-700' : 'text-slate-700'}`}>{fmtCOP(sup.total)}</span>
+                      <span className="block text-xs text-slate-400 font-normal">{sup.count}/{comp.totalItems} ítems</span>
                     </td>
                   );
                 })}
               </tr>
 
-              {/* Fila de acción: elegir ganador */}
+              {/* Elegir ganador */}
               {!isApproved && (
                 <tr>
-                  <td className="px-4 py-3 text-xs text-slate-400">Seleccionar ganador</td>
+                  <td className="px-4 py-3 text-xs text-slate-400" colSpan={2}>Seleccionar ganador</td>
                   {suppliers.map((sup) => (
                     <td key={sup.id} className="px-4 py-3 text-center">
                       <Button
                         size="sm"
-                        variant={winnerId === sup.id ? 'primary' : 'secondary'}
-                        onClick={() => onWinnerClick(sup)}
+                        variant={sup.id === favId ? 'primary' : 'secondary'}
+                        onClick={() => onWinnerClick({ id: sup.id, nombre: sup.nombre })}
                       >
                         Elegir
                       </Button>

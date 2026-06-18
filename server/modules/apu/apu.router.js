@@ -168,16 +168,14 @@ router.post('/confirm', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, r
   } catch (err) { next(err); }
 });
 
-// Parsear PDF con IA — extrae filas de APU/presupuesto en texto libre
+// Parsear PDF con IA — detecta estructura jerárquica APU (ítem + insumos)
 router.post(
   '/parse-pdf',
   requireRole('DIRECTOR', 'APOYO_DIRECTOR'),
   upload.single('file'),
   async (req, res, next) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: true, message: 'Se requiere un archivo PDF' });
-      }
+      if (!req.file) return res.status(400).json({ error: true, message: 'Se requiere un archivo PDF' });
 
       let pdfText = '';
       try {
@@ -188,45 +186,57 @@ router.post(
         logger.error('[apu] Error parseando PDF:', err.message);
         return res.status(422).json({ error: true, message: 'No se pudo leer el PDF. Verifica que no sea una imagen escaneada.' });
       }
-
       if (!pdfText.trim()) {
-        return res.status(422).json({ error: true, message: 'El PDF no contiene texto extraíble (puede ser una imagen escaneada).' });
+        return res.status(422).json({ error: true, message: 'El PDF no contiene texto extraíble.' });
       }
 
-      // Limitar texto para Groq (primeros ~8000 chars)
-      const textSlice = pdfText.slice(0, 8000);
-
+      const textSlice = pdfText.slice(0, 10000);
       const groq = getGroq();
+
       const completion = await groq.chat.completions.create({
         model: 'llama-3.3-70b-versatile',
-        messages: [
-          {
-            role: 'user',
-            content: `Eres un experto en presupuestos de construcción en Colombia. Analiza este texto extraído de un documento PDF (puede ser un APU, un presupuesto de obra, una lista de precios básicos, o una mezcla).
+        messages: [{
+          role: 'user',
+          content: `Eres un experto en APU (Análisis de Precios Unitarios) de construcción en Colombia.
+Analiza este texto extraído de un PDF. El documento puede contener:
+1. Un PRESUPUESTO: lista de ítems APU con código, descripción, unidad, cantidad total, precio unitario
+2. APUs DETALLADOS: cada APU muestra sus INSUMOS (materiales, mano de obra, equipo) con tipo, descripción, unidad, rendimiento y precio
+
+Detecta el tipo y extrae la información con su jerarquía:
 
 Texto del PDF:
 ${textSlice}
 
-Extrae TODOS los ítems que puedas identificar. Para cada ítem extrae:
-- codigo: código del ítem (ej: 1.1, 01.02, A-001, etc.) — puede ser nulo si no hay
-- descripcion: descripción del trabajo, material o actividad
-- unidad: unidad de medida (M3, ML, UND, M2, KG, GLB, etc.)
-- cantidad: cantidad numérica (puede ser nula si es solo precio básico)
-- precioUnitario: precio unitario en pesos colombianos (número sin símbolos, sin puntos de miles)
-- tipo: "APU" si es un análisis de precio unitario, "BASICOS" si es un precio básico o insumo, "PRESUPUESTO" si es una actividad presupuestada
+Instrucciones:
+- Si detectas filas con TIPO (MATERIAL/M.DE OBRA/MANO DE OBRA/EQUIPO/HERRAMIENTA), esas son los insumos de un APU
+- El capítulo es el título de agrupación (ej: "9. PISOS Y ACABADOS", "1. CIMENTACION")
+- Para números: elimina puntos de miles y comas de decimales (ej: "29.900" → 29900, "$1.062.682" → 1062682)
+- rendimiento: la cantidad del insumo por unidad de obra (puede llamarse REND, CANT, RENDIMIENTO)
 
 Responde SOLO con JSON válido:
 {
+  "tipo": "PRESUPUESTO" | "APU_DETALLADO" | "MIXTO",
+  "nota": "descripción breve del documento",
   "items": [
-    {"codigo": "1.1", "descripcion": "Excavación manual", "unidad": "M3", "cantidad": 50, "precioUnitario": 45000, "tipo": "APU"},
-    ...
-  ],
-  "nota": "breve descripción del tipo de documento"
+    {
+      "codigo": "ACA-01",
+      "descripcion": "Estuco y pintura en muros",
+      "unidad": "m²",
+      "cantidad": 12961.46,
+      "precioUnitario": 24405,
+      "capitulo": "9. PISOS Y ACABADOS",
+      "tipo": "APU",
+      "insumos": [
+        {"tipo": "MATERIAL", "descripcion": "Estuco plástico en polvo (25 kg)", "unidad": "BOLSA", "rendimiento": 0.15, "precioUnitario": 29900, "precioTotal": 4485},
+        {"tipo": "M_DE_OBRA", "descripcion": "Oficial [rend. 18 m²/día]", "unidad": "jornal", "rendimiento": 0.056, "precioUnitario": 68000, "precioTotal": 3808},
+        {"tipo": "EQUIPO", "descripcion": "Herramienta menor (5% M.O.)", "unidad": "Global", "rendimiento": 0.05, "precioUnitario": 7076, "precioTotal": 354}
+      ]
+    }
+  ]
 }`,
-          },
-        ],
+        }],
         temperature: 0.1,
-        max_tokens: 4000,
+        max_tokens: 6000,
         response_format: { type: 'json_object' },
       });
 
@@ -238,11 +248,50 @@ Responde SOLO con JSON válido:
       }
 
       const items = (result.items || []).filter((i) => i.descripcion && i.descripcion.length > 2);
-      logger.info(`[apu] PDF parseado: ${items.length} ítems extraídos`);
+      logger.info(`[apu] PDF parseado: ${items.length} ítems (tipo: ${result.tipo})`);
 
-      ok(res, { items, nota: result.nota || '', totalExtraidos: items.length });
+      ok(res, { items, tipo: result.tipo || 'PRESUPUESTO', nota: result.nota || '', totalExtraidos: items.length });
     } catch (err) { next(err); }
   }
 );
+
+// Obtener insumos de un APU
+router.get('/:id/insumos', async (req, res, next) => {
+  try {
+    const insumos = await prisma.itemAPUInsumo.findMany({
+      where: { itemApuId: req.params.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    ok(res, insumos);
+  } catch (err) { next(err); }
+});
+
+// Guardar/reemplazar insumos de un APU
+router.put('/:id/insumos', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+  try {
+    const { insumos } = req.body;
+    if (!Array.isArray(insumos)) return res.status(400).json({ error: true, message: 'Se requiere array de insumos' });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.itemAPUInsumo.deleteMany({ where: { itemApuId: req.params.id } });
+      if (insumos.length > 0) {
+        await tx.itemAPUInsumo.createMany({
+          data: insumos.map((ins) => ({
+            itemApuId:      req.params.id,
+            tipo:           String(ins.tipo        || 'MATERIAL').toUpperCase(),
+            descripcion:    String(ins.descripcion || '').trim(),
+            unidad:         String(ins.unidad      || 'UND').trim() || 'UND',
+            rendimiento:    parseFloat(ins.rendimiento)    || 0,
+            precioUnitario: parseFloat(ins.precioUnitario) || 0,
+            precioTotal:    parseFloat(ins.precioTotal)    || 0,
+          })),
+        });
+      }
+    });
+
+    const updated = await prisma.itemAPUInsumo.findMany({ where: { itemApuId: req.params.id } });
+    ok(res, updated);
+  } catch (err) { next(err); }
+});
 
 module.exports = router;

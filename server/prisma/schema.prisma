@@ -219,15 +219,32 @@ model ItemAPU {
   precioUnitario Decimal  @db.Decimal(15, 2)
   saldoCantidad  Decimal  @db.Decimal(15, 4)
   saldoValor     Decimal  @db.Decimal(15, 2)
+  capitulo       String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   project          Project           @relation(fields: [projectId], references: [id])
+  insumos          ItemAPUInsumo[]
   requisitionItems RequisitionItem[]
   quotationItems   QuotationItem[]
   priceHistory     PriceHistory[]
 
   @@unique([projectId, codigo])
+}
+
+model ItemAPUInsumo {
+  id             String  @id @default(cuid())
+  itemApuId      String
+  tipo           String  // MATERIAL | M_DE_OBRA | EQUIPO | OTRO
+  descripcion    String
+  unidad         String  @default("UND")
+  rendimiento    Decimal @default(0) @db.Decimal(15, 4)
+  precioUnitario Decimal @default(0) @db.Decimal(15, 2)
+  precioTotal    Decimal @default(0) @db.Decimal(15, 2)
+  createdAt      DateTime @default(now())
+
+  itemAPU          ItemAPU         @relation(fields: [itemApuId], references: [id], onDelete: Cascade)
+  requisitionItems RequisitionItem[]
 }
 
 model Supplier {
@@ -278,16 +295,18 @@ model Requisition {
 }
 
 model RequisitionItem {
-  id            String  @id @default(cuid())
-  requisitionId String
-  itemApuId     String?
-  descripcion   String
-  cantidad      Decimal @db.Decimal(15, 4)
-  unidad        String
-  enAPU         Boolean @default(false)
+  id              String  @id @default(cuid())
+  requisitionId   String
+  itemApuId       String?
+  itemApuInsumoId String?
+  descripcion     String
+  cantidad        Decimal @db.Decimal(15, 4)
+  unidad          String
+  enAPU           Boolean @default(false)
 
-  requisition Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  itemAPU     ItemAPU?    @relation(fields: [itemApuId], references: [id])
+  requisition   Requisition    @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  itemAPU       ItemAPU?       @relation(fields: [itemApuId], references: [id])
+  itemAPUInsumo ItemAPUInsumo? @relation(fields: [itemApuInsumoId], references: [id], onDelete: SetNull)
 }
 
 model Quotation {

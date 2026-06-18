@@ -49,7 +49,7 @@ const getRequisition = async (companyId, requisitionId) => {
       project: { select: { companyId: true, nombre: true, contratoNo: true } },
       solicitante: { select: { nombre: true, rol: true, email: true } },
       aprobador: { select: { nombre: true, rol: true } },
-      items: { include: { itemAPU: true } },
+      items: { include: { itemAPU: true, itemAPUInsumo: { include: { itemAPU: true } } } },
       quotation: { include: { items: { include: { supplier: true, itemAPU: true } } } },
     },
   });
@@ -65,16 +65,14 @@ const createRequisition = async (companyId, userId, data) => {
   const project = await prisma.project.findFirst({ where: { id: projectId, companyId } });
   if (!project) throw Object.assign(new Error('Proyecto no encontrado'), { statusCode: 404 });
 
-  // Verifica qué ítems están en el APU
+  // Verifica qué ítems están en el APU — acepta tanto código como ID directo
   const apuCodes = (items || []).map((i) => i.codigo).filter(Boolean);
   const apuItems = apuCodes.length
-    ? await prisma.itemAPU.findMany({
-        where: { projectId, codigo: { in: apuCodes } },
-      })
+    ? await prisma.itemAPU.findMany({ where: { projectId, codigo: { in: apuCodes } } })
     : [];
-  const apuMap = Object.fromEntries(apuItems.map((a) => [a.codigo, a]));
+  const apuMapByCodigo = Object.fromEntries(apuItems.map((a) => [a.codigo, a]));
 
-  const allInAPU = items.every((i) => !i.codigo || apuMap[i.codigo]);
+  const allInAPU = items.every((i) => i.itemApuId || (!i.codigo || apuMapByCodigo[i.codigo]));
   const estado = allInAPU ? 'ENVIADA' : 'PENDIENTE_JUST';
 
   const consecutivo = await generateConsecutivo(projectId);
@@ -89,13 +87,17 @@ const createRequisition = async (companyId, userId, data) => {
       prioridad: prioridad || 'MEDIA',
       fechaLimite: fechaLimite ? new Date(fechaLimite) : null,
       items: {
-        create: items.map((item) => ({
-          descripcion: item.descripcion,
-          cantidad: parseFloat(item.cantidad) || 1,
-          unidad: item.unidad || 'GL',
-          itemApuId: apuMap[item.codigo]?.id || null,
-          enAPU: !!apuMap[item.codigo],
-        })),
+        create: items.map((item) => {
+          const resolvedApuId = item.itemApuId || apuMapByCodigo[item.codigo]?.id || null;
+          return {
+            descripcion:     item.descripcion,
+            cantidad:        parseFloat(item.cantidad) || 1,
+            unidad:          item.unidad || 'GL',
+            itemApuId:       resolvedApuId,
+            itemApuInsumoId: item.itemApuInsumoId || null,
+            enAPU:           !!resolvedApuId,
+          };
+        }),
       },
     },
     include: { items: true },
@@ -119,36 +121,59 @@ const analyzeRequisitionBudget = async (companyId, requisitionId) => {
   const req = await getRequisition(companyId, requisitionId);
 
   const items = req.items.map((item) => {
-    if (!item.itemAPU) {
+    const cantidad = Number(item.cantidad);
+
+    // Caso A: ítem ligado a un INSUMO específico de un APU
+    if (item.itemAPUInsumo) {
+      const ins = item.itemAPUInsumo;
+      const apu = ins.itemAPU;
+      const precioUnitario = Number(ins.precioUnitario);
       return {
         id: item.id,
         descripcion: item.descripcion,
-        cantidad: Number(item.cantidad),
+        cantidad,
         unidad: item.unidad,
-        veredicto: 'FUERA_APU',
-        detalle: 'No corresponde a ningún ítem del presupuesto APU. Requiere justificación.',
+        codigoAPU: apu?.codigo || null,
+        tipoInsumo: ins.tipo,
+        precioUnitario,
+        valorEstimado: cantidad * precioUnitario,
+        veredicto: 'DENTRO_PRESUPUESTO',
+        detalle: `Insumo del APU ${apu?.codigo || ''} (${ins.tipo.replace(/_/g, ' ')}). Precio ref.: $${precioUnitario.toLocaleString('es-CO')}.`,
       };
     }
-    const cantidad = Number(item.cantidad);
-    const saldoCantidad = Number(item.itemAPU.saldoCantidad);
-    const precioUnitario = Number(item.itemAPU.precioUnitario);
-    const valorEstimado = cantidad * precioUnitario;
-    const saldoValor = Number(item.itemAPU.saldoValor);
-    const excede = cantidad > saldoCantidad;
 
+    // Caso B: ítem ligado a un APU completo
+    if (item.itemAPU) {
+      const saldoCantidad = Number(item.itemAPU.saldoCantidad);
+      const precioUnitario = Number(item.itemAPU.precioUnitario);
+      const valorEstimado = cantidad * precioUnitario;
+      const saldoValor = Number(item.itemAPU.saldoValor);
+      const excede = cantidad > saldoCantidad;
+      return {
+        id: item.id,
+        descripcion: item.descripcion,
+        cantidad,
+        unidad: item.unidad,
+        codigoAPU: item.itemAPU.codigo,
+        saldoCantidad,
+        precioUnitario,
+        valorEstimado,
+        saldoValor,
+        veredicto: excede ? 'EXCEDE_SALDO' : 'DENTRO_PRESUPUESTO',
+        detalle: excede
+          ? `Solicita ${cantidad} ${item.unidad} pero el saldo APU es ${saldoCantidad}. Excede en ${(cantidad - saldoCantidad).toFixed(2)}.`
+          : `Dentro del saldo APU (${saldoCantidad} ${item.unidad} disponibles).`,
+      };
+    }
+
+    // Caso C: ítem libre, fuera del APU
     return {
       id: item.id,
       descripcion: item.descripcion,
       cantidad,
       unidad: item.unidad,
-      codigoAPU: item.itemAPU.codigo,
-      saldoCantidad,
-      valorEstimado,
-      saldoValor,
-      veredicto: excede ? 'EXCEDE_SALDO' : 'DENTRO_PRESUPUESTO',
-      detalle: excede
-        ? `Solicita ${cantidad} ${item.unidad} pero el saldo APU es ${saldoCantidad}. Excede en ${(cantidad - saldoCantidad).toFixed(2)}.`
-        : `Dentro del saldo APU (${saldoCantidad} ${item.unidad} disponibles).`,
+      veredicto: 'FUERA_APU',
+      detalle: 'No corresponde a ningún ítem del presupuesto APU. Requiere justificación.',
     };
   });
 

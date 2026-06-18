@@ -6,7 +6,12 @@
       "Bash(Format-Table -AutoSize)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "PowerShell(Set-Location \"C:\\\\Users\\\\ACER\\\\OneDrive\\\\Escritorio\\\\ingcisol\\\\procura-ai\\\\server\"; $env:DATABASE_URL = 'postgresql://u:p@localhost:5432/db'; npx prisma validate; npx prisma generate)"
+      "PowerShell(Set-Location \"C:\\\\Users\\\\ACER\\\\OneDrive\\\\Escritorio\\\\ingcisol\\\\procura-ai\\\\server\"; $env:DATABASE_URL = 'postgresql://u:p@localhost:5432/db'; npx prisma validate; npx prisma generate)",
+      "Bash(docker-compose logs *)",
+      "Bash(node -e \"require\\('./modules/quotations/quotations.service'\\); console.log\\('OK quotations.service'\\);\")",
+      "Bash(node -c worker.js)",
+      "Bash(docker exec *)",
+      "Bash(docker restart *)"
     ]
   }
 }

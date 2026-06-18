@@ -122,12 +122,12 @@ class BotManager {
         // ¿Es un usuario interno?
         const user = await prisma.user.findFirst({
           where: { companyId, whatsapp: { contains: phone }, activo: true },
-          select: { nombre: true, rol: true },
+          select: { id: true, nombre: true, rol: true },
         });
 
         if (!user) return;
 
-        const reply = await buildResponse(text, companyId, user.rol);
+        const reply = await buildResponse(text, companyId, { id: user.id, rol: user.rol });
         if (reply) await msg.reply(reply);
       } catch (err) {
         logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`);

@@ -242,6 +242,45 @@ export default function Dashboard() {
         </Card>
       )}
 
+      {/* Órdenes de compra activas: qué se pidió y a cuánto */}
+      {ocActivas > 0 && (
+        <Card title="Órdenes de compra activas">
+          <div className="divide-y divide-slate-100">
+            {tracking.slice(0, 6).map((orden) => {
+              const dot = orden.semaforo === 'ROJO' ? 'bg-danger'
+                : orden.semaforo === 'AMARILLO' ? 'bg-warning'
+                : orden.semaforo === 'VERDE' ? 'bg-success' : 'bg-slate-300';
+              return (
+                <button
+                  key={orden.id}
+                  onClick={() => navigate('/orders')}
+                  className="w-full flex items-center justify-between py-3 text-left hover:bg-slate-50 transition-colors rounded-lg px-2 -mx-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${dot}`} />
+                      <span className="text-sm font-medium text-slate-700">{orden.consecutivo}</span>
+                      <span className="text-xs text-slate-400">· {orden.proveedor}</span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5 pl-4.5 truncate">{orden.primerItem}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0 ml-3">
+                    <p className="text-sm font-semibold text-slate-700">{fmtM(orden.montoTotal)}</p>
+                    <p className="text-xs text-slate-400">
+                      {orden.diasRestantes !== null
+                        ? orden.diasRestantes < 0
+                          ? `Vencida hace ${Math.abs(orden.diasRestantes)}d`
+                          : `${orden.diasRestantes}d restantes`
+                        : orden.estado}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       {ocActivas === 0 && pendientesAprobacion === 0 && (delegStats?.activas ?? 0) === 0 && (
         <div className="text-center py-16 text-slate-400">
           <div className="text-5xl mb-3">✅</div>
