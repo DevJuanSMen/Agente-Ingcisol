@@ -78,7 +78,7 @@ export default function ProjectList() {
                 {/* Header */}
                 <div
                   className="h-2 rounded-t-xl"
-                  style={{ backgroundColor: project.color || '#1B6FF5' }}
+                  style={{ backgroundColor: project.color || '#E85D04' }}
                 />
                 <div className="p-5">
                   <div className="flex items-start justify-between gap-3 mb-3">

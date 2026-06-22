@@ -31,6 +31,16 @@ function StatusTimeline({ estado }) {
       </div>
     );
   }
+  if (estado === 'EXPIRADA') {
+    return (
+      <div className="flex items-center gap-2 p-3 bg-zinc-100 border border-zinc-300 rounded-lg">
+        <span>⏰</span>
+        <p className="text-xs text-zinc-700 font-medium">
+          Requisición expirada — pasó la fecha límite. Extiende la fecha para reactivarla.
+        </p>
+      </div>
+    );
+  }
   const pos = ESTADO_POS[estado] ?? 0;
   return (
     <div className="flex items-center">
@@ -219,7 +229,36 @@ export default function RequisitionList() {
     }
   };
 
+  const handleExtend = async (id) => {
+    const hoy = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const fecha = prompt('Nueva fecha límite (AAAA-MM-DD):', hoy);
+    if (!fecha) return;
+    setActionLoading(id + '_extend');
+    try {
+      await api.put(`/requisitions/${id}/extend`, { fechaLimite: fecha });
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al extender la fecha');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('¿Eliminar esta requisición? Esta acción no se puede deshacer.')) return;
+    setActionLoading(id + '_delete');
+    try {
+      await api.delete(`/requisitions/${id}`);
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al eliminar');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const fmt = (d) => d ? new Date(d).toLocaleDateString('es-CO') : '—';
+  const isVencida = (d) => d && new Date(d).getTime() < Date.now();
 
   const columns = [
     { key: 'consecutivo', label: 'Consecutivo' },
@@ -232,6 +271,13 @@ export default function RequisitionList() {
       </span>
     )},
     { key: 'createdAt', label: 'Fecha', render: (r) => fmt(r.createdAt) },
+    { key: 'fechaLimite', label: 'Vence', render: (r) => (
+      r.fechaLimite ? (
+        <span className={`text-xs ${r.estado === 'EXPIRADA' || isVencida(r.fechaLimite) ? 'text-red-600 font-medium' : 'text-slate-600'}`}>
+          {fmt(r.fechaLimite)}
+        </span>
+      ) : <span className="text-xs text-slate-300">—</span>
+    )},
     { key: 'actions', label: 'Acciones', render: (r) => (
       <div className="flex items-center gap-2">
         <Button size="sm" variant="secondary" onClick={() => setDetailId(r.id)}>
@@ -256,6 +302,26 @@ export default function RequisitionList() {
               Rechazar
             </Button>
           </>
+        )}
+        {r.estado === 'EXPIRADA' && (
+          <Button
+            size="sm"
+            variant="primary"
+            loading={actionLoading === r.id + '_extend'}
+            onClick={() => handleExtend(r.id)}
+          >
+            Extender fecha
+          </Button>
+        )}
+        {canApprove && !['OC_EMITIDA', 'CERRADA'].includes(r.estado) && (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={actionLoading === r.id + '_delete'}
+            onClick={() => handleDelete(r.id)}
+          >
+            🗑️
+          </Button>
         )}
       </div>
     )},

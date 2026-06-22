@@ -24,6 +24,21 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+// Descargar la OC en PDF (para el área financiera)
+router.get('/:id/pdf', async (req, res, next) => {
+  try {
+    const { buffer, filename } = await ordersService.generateOrderDocument(
+      req.user.companyId,
+      req.params.id
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.put(
   '/:id/confirm-delivery',
   requireRole('DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'),

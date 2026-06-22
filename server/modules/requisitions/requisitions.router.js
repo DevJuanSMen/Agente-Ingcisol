@@ -78,4 +78,33 @@ router.put('/:id/reject', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
   }
 });
 
+// Extender / actualizar la fecha límite (reactiva si estaba EXPIRADA)
+router.put('/:id/extend', async (req, res, next) => {
+  try {
+    const requisition = await requisitionsService.extendRequisition(
+      req.user.companyId,
+      req.params.id,
+      req.user.id,
+      req.body
+    );
+    ok(res, requisition);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Eliminar requisición (no permitido si tiene OC emitida)
+router.delete('/:id', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+  try {
+    const result = await requisitionsService.deleteRequisition(
+      req.user.companyId,
+      req.params.id,
+      req.user.id
+    );
+    ok(res, { message: `Requisición ${result.consecutivo} eliminada` });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

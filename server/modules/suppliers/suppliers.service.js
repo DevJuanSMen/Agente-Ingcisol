@@ -2,6 +2,8 @@ const prisma = require('../../shared/db');
 
 const listSuppliers = async (companyId, filters = {}) => {
   const where = { companyId };
+  // Por defecto se ocultan los proveedores archivados (soft-delete)
+  if (filters.includeInactive !== 'true') where.activo = true;
   if (filters.segmento) where.segmento = filters.segmento;
   if (filters.homologado !== undefined) where.homologado = filters.homologado === 'true';
   // projectId: proveedores del proyecto + los globales de la empresa
@@ -29,9 +31,30 @@ const createSupplier = async (companyId, data) => {
   });
 };
 
+// Elimina un proveedor. Si tiene historial de procura (cotizaciones, invitaciones,
+// órdenes o historial de precios) NO se puede borrar sin corromper esos registros:
+// en ese caso se ARCHIVA (soft-delete) para que desaparezca de los listados pero se
+// conserve la trazabilidad. Si no tiene referencias, se borra de verdad.
 const deleteSupplier = async (companyId, supplierId) => {
   await getSupplier(companyId, supplierId);
-  return prisma.supplier.delete({ where: { id: supplierId } });
+
+  const [quotationItems, invites, orders, priceHistory, wonQuotations] = await Promise.all([
+    prisma.quotationItem.count({ where: { supplierId } }),
+    prisma.quotationInvite.count({ where: { supplierId } }),
+    prisma.purchaseOrder.count({ where: { supplierId } }),
+    prisma.priceHistory.count({ where: { supplierId } }),
+    prisma.quotation.count({ where: { proveedorGanadorId: supplierId } }),
+  ]);
+
+  const tieneHistorial = quotationItems + invites + orders + priceHistory + wonQuotations > 0;
+
+  if (tieneHistorial) {
+    await prisma.supplier.update({ where: { id: supplierId }, data: { activo: false } });
+    return { archived: true };
+  }
+
+  await prisma.supplier.delete({ where: { id: supplierId } });
+  return { archived: false };
 };
 
 const updateSupplier = async (companyId, supplierId, data) => {

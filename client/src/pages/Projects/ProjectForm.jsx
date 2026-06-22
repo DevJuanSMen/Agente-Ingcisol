@@ -7,7 +7,7 @@ import Card from '../../components/ui/Card';
 
 const ICONOS = ['🏗️', '🏫', '🛣️', '🏭', '🏢', '🏠', '🌉', '🏥', '⚡', '💧', '🌿', '🔧'];
 const COLORES = [
-  '#1B6FF5', '#F5A623', '#22D685', '#A78BFA', '#14B8A6',
+  '#E85D04', '#F5A623', '#22D685', '#A78BFA', '#14B8A6',
   '#F97316', '#EF4444', '#06B6D4', '#8B5CF6', '#10B981',
 ];
 
@@ -20,7 +20,7 @@ const ESTADOS = [
 
 const EMPTY = {
   nombre: '', contratoNo: '', entidad: '', interventor: '', ciudad: '', descripcion: '',
-  valor: '', inicio: '', fin: '', icono: '🏗️', color: '#1B6FF5', estado: 'PLANIFICADO',
+  valor: '', inicio: '', fin: '', icono: '🏗️', color: '#E85D04', estado: 'PLANIFICADO',
 };
 
 export default function ProjectForm() {
@@ -50,7 +50,7 @@ export default function ProjectForm() {
           inicio: p.inicio ? p.inicio.split('T')[0] : '',
           fin: p.fin ? p.fin.split('T')[0] : '',
           icono: p.icono || '🏗️',
-          color: p.color || '#1B6FF5',
+          color: p.color || '#E85D04',
           estado: p.estado || 'PLANIFICADO',
         });
       })

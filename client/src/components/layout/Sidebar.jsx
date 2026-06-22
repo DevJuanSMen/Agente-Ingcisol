@@ -48,11 +48,11 @@ function ProjectSelector() {
   };
 
   return (
-    <div className="px-3 py-2 border-b border-slate-700">
+    <div className="px-3 py-2 border-b border-ink-700">
       <p className="text-xs text-slate-500 mb-1.5 font-medium uppercase tracking-wide">Proyecto activo</p>
       <button
         onClick={() => setOpen((p) => !p)}
-        className="w-full flex items-center gap-2 bg-slate-800 hover:bg-slate-700 rounded-lg px-2.5 py-2 transition-colors text-left"
+        className="w-full flex items-center gap-2 bg-ink-800 hover:bg-ink-700 rounded-lg px-2.5 py-2 transition-colors text-left"
       >
         <span className="text-base flex-shrink-0">
           {activeProject?.icono || '🏗️'}
@@ -64,7 +64,7 @@ function ProjectSelector() {
       </button>
 
       {open && (
-        <div className="mt-1 bg-slate-800 rounded-lg overflow-hidden border border-slate-700">
+        <div className="mt-1 bg-ink-800 rounded-lg overflow-hidden border border-ink-700">
           {projects.length === 0 ? (
             <p className="text-xs text-slate-500 p-3">Sin proyectos</p>
           ) : (
@@ -73,8 +73,8 @@ function ProjectSelector() {
                 key={p.id}
                 onClick={() => handleSelect(p)}
                 disabled={switching !== null}
-                className={`w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-slate-700 transition-colors ${
-                  activeProject?.id === p.id ? 'bg-slate-700' : ''
+                className={`w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-ink-700 transition-colors ${
+                  activeProject?.id === p.id ? 'bg-ink-700' : ''
                 }`}
               >
                 {switching === p.id ? (
@@ -115,12 +115,12 @@ export default function Sidebar({ open, onClose }) {
       )}
 
       <aside
-        className={`fixed top-0 left-0 h-full w-60 bg-slate-900 text-white z-30 flex flex-col
+        className={`fixed top-0 left-0 h-full w-60 bg-ink-900 text-white z-30 flex flex-col
           transition-transform duration-200
           ${open ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
       >
         {/* Logo */}
-        <div className="h-14 flex flex-col justify-center px-5 border-b border-slate-700 flex-shrink-0">
+        <div className="h-14 flex flex-col justify-center px-5 border-b border-ink-700 flex-shrink-0">
           <span className="text-base font-bold text-white tracking-tight leading-tight">
             PROCURA <span className="text-primary">AI</span>
           </span>
@@ -152,7 +152,7 @@ export default function Sidebar({ open, onClose }) {
                   `flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 text-sm transition-colors
                   ${isActive
                     ? 'bg-primary text-white font-medium'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    : 'text-slate-300 hover:bg-ink-800 hover:text-white'
                   }`
                 }
               >
@@ -164,7 +164,7 @@ export default function Sidebar({ open, onClose }) {
         </nav>
 
         {/* Usuario y logout */}
-        <div className="p-4 border-t border-slate-700 flex-shrink-0">
+        <div className="p-4 border-t border-ink-700 flex-shrink-0">
           <div className="text-xs text-slate-400 mb-0.5 truncate">{user?.nombre}</div>
           <div className="text-xs text-slate-500 mb-3">{user?.rol?.replace(/_/g, ' ')}</div>
           <button

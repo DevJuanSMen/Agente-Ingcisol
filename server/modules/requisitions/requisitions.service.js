@@ -113,6 +113,13 @@ const createRequisition = async (companyId, userId, data) => {
     excludeUserId: userId,
   });
 
+  // Notificar al director por WhatsApp para que la apruebe sin entrar al panel
+  await publishCommand(redis, 'notify_req_for_approval', {
+    companyId,
+    requisitionId: requisition.id,
+    excludeUserId: userId,
+  }).catch(() => {}); // no bloquear si Redis no está disponible
+
   return requisition;
 };
 
@@ -288,6 +295,101 @@ const rejectRequisition = async (companyId, requisitionId, approverId, motivo) =
   return updated;
 };
 
+// Estados que cuentan como "activos" y por tanto pueden expirar al pasar la fecha límite.
+const ESTADOS_EXPIRABLES = ['ENVIADA', 'PENDIENTE_JUST', 'EN_COTIZACION', 'APROBADA'];
+
+// Eliminar una requisición. No se permite si ya tiene una OC emitida o está cerrada
+// (eso implica registros financieros); para esas hay que cancelar la OC. En los
+// demás casos se borra la requisición, sus ítems y la cotización asociada (cascada).
+const deleteRequisition = async (companyId, requisitionId, userId) => {
+  const req = await getRequisition(companyId, requisitionId);
+  if (['OC_EMITIDA', 'CERRADA'].includes(req.estado)) {
+    throw Object.assign(
+      new Error('No se puede eliminar una requisición con orden de compra emitida. Cancela la OC primero.'),
+      { statusCode: 400 }
+    );
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const quot = await tx.quotation.findUnique({ where: { requisitionId }, select: { id: true } });
+    if (quot) await tx.quotation.delete({ where: { id: quot.id } }); // cascada: items + invites
+    await tx.requisition.delete({ where: { id: requisitionId } }); // cascada: items
+    await tx.auditLog.create({
+      data: {
+        companyId,
+        userId,
+        accion: 'ELIMINAR_REQUISICION',
+        entidad: 'Requisition',
+        entidadId: requisitionId,
+        metadata: { consecutivo: req.consecutivo, estado: req.estado },
+      },
+    });
+  });
+
+  return { deleted: true, consecutivo: req.consecutivo };
+};
+
+// Extender la fecha límite de una requisición ("va a tardar más tiempo"). Si estaba
+// EXPIRADA, la reactiva al estado de proceso que le corresponde.
+const extendRequisition = async (companyId, requisitionId, userId, data) => {
+  const req = await getRequisition(companyId, requisitionId);
+  if (['OC_EMITIDA', 'CERRADA', 'RECHAZADA'].includes(req.estado)) {
+    throw Object.assign(
+      new Error(`No se puede modificar la fecha de una requisición en estado ${req.estado}`),
+      { statusCode: 400 }
+    );
+  }
+  const nueva = data.fechaLimite ? new Date(data.fechaLimite) : null;
+  if (!nueva || isNaN(nueva.getTime())) {
+    throw Object.assign(new Error('Fecha límite inválida'), { statusCode: 400 });
+  }
+  if (nueva.getTime() <= Date.now()) {
+    throw Object.assign(new Error('La nueva fecha debe ser futura'), { statusCode: 400 });
+  }
+
+  // Si estaba expirada, reactivar al estado del proceso según haya cotización o no
+  let estado = req.estado;
+  if (req.estado === 'EXPIRADA') {
+    const tieneQuot = await prisma.quotation.findUnique({ where: { requisitionId }, select: { id: true } });
+    estado = tieneQuot ? 'EN_COTIZACION' : 'ENVIADA';
+  }
+
+  const updated = await prisma.requisition.update({
+    where: { id: requisitionId },
+    data: {
+      fechaLimite: nueva,
+      estado,
+      ...(data.prioridad && ['ALTA', 'MEDIA', 'BAJA'].includes(data.prioridad) ? { prioridad: data.prioridad } : {}),
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      companyId,
+      userId,
+      accion: req.estado === 'EXPIRADA' ? 'REACTIVAR_REQUISICION' : 'EXTENDER_REQUISICION',
+      entidad: 'Requisition',
+      entidadId: requisitionId,
+      metadata: { consecutivo: req.consecutivo, nuevaFecha: nueva.toISOString() },
+    },
+  });
+
+  return updated;
+};
+
+// Marca como EXPIRADA toda requisición activa cuya fecha límite ya pasó. Global
+// (sin companyId): la ejecuta el cron del worker. Devuelve el número de afectadas.
+const expireRequisitions = async () => {
+  const result = await prisma.requisition.updateMany({
+    where: {
+      fechaLimite: { not: null, lt: new Date() },
+      estado: { in: ESTADOS_EXPIRABLES },
+    },
+    data: { estado: 'EXPIRADA' },
+  });
+  return result.count;
+};
+
 module.exports = {
   listRequisitions,
   getRequisition,
@@ -295,4 +397,7 @@ module.exports = {
   approveRequisition,
   rejectRequisition,
   analyzeRequisitionBudget,
+  deleteRequisition,
+  extendRequisition,
+  expireRequisitions,
 };

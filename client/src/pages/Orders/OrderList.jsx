@@ -51,6 +51,25 @@ export default function OrderList() {
     }
   };
 
+  const handleDownloadPdf = async (id, consecutivo) => {
+    setActionLoading(id);
+    try {
+      const res = await api.get(`/orders/${id}/pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${consecutivo || 'orden-compra'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.response?.data?.message || 'No se pudo generar el PDF');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const getSemaforo = (fechaEntrega) => {
     if (!fechaEntrega) return null;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
@@ -79,6 +98,9 @@ export default function OrderList() {
     )},
     { key: 'actions', label: 'Acciones', render: (r) => (
       <div className="flex items-center gap-2">
+        <Button size="sm" variant="secondary" loading={actionLoading === r.id} onClick={() => handleDownloadPdf(r.id, r.consecutivo)}>
+          PDF
+        </Button>
         {['EMITIDA', 'ENVIADA'].includes(r.estado) &&
           ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'].includes(user?.rol) && (
           <Button size="sm" variant="secondary" loading={actionLoading === r.id} onClick={() => handleConfirmDelivery(r.id)}>

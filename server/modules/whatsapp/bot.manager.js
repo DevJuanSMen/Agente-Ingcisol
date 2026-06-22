@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const { logger } = require('../../shared/utils/logger');
 const redis = require('../../shared/redis');
 const prisma = require('../../shared/db');
 const { buildResponse, handleSupplierMessage } = require('./bot.context');
+const botFlows = require('./bot.flows');
 
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
 const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
@@ -108,9 +109,9 @@ class BotManager {
 
         logger.info(`[bot:${companyId}] Mensaje de: ${phone}`);
 
-        // ¿Es un proveedor registrado?
+        // ¿Es un proveedor registrado y activo? (los archivados no interceptan)
         const supplier = await prisma.supplier.findFirst({
-          where: { companyId, whatsapp: { contains: phone } },
+          where: { companyId, activo: true, whatsapp: { contains: phone } },
         });
 
         if (supplier) {
@@ -126,6 +127,20 @@ class BotManager {
         });
 
         if (!user) return;
+
+        // ¿Hay una acción pendiente para este usuario? (aprobar requisición /
+        // adjudicar ganador desde WhatsApp)
+        const pending = await botFlows.getPending(companyId, user.id);
+        if (pending) {
+          const reply = await botFlows.handlePendingReply(
+            text,
+            companyId,
+            { id: user.id, rol: user.rol, nombre: user.nombre, phone },
+            pending
+          );
+          if (reply) await msg.reply(reply);
+          return;
+        }
 
         const reply = await buildResponse(text, companyId, { id: user.id, rol: user.rol });
         if (reply) await msg.reply(reply);
@@ -163,6 +178,18 @@ class BotManager {
     if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
     const sanitized = phone.replace(/\D/g, '');
     return client.sendMessage(`${sanitized}@c.us`, text);
+  }
+
+  // Envía un documento (PDF en base64) en nombre de una empresa
+  async sendDocument(companyId, phone, base64, filename, caption) {
+    const client = this.clients.get(companyId);
+    if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
+    const sanitized = phone.replace(/\D/g, '');
+    const media = new MessageMedia('application/pdf', base64, filename || 'documento.pdf');
+    return client.sendMessage(`${sanitized}@c.us`, media, {
+      caption: caption || undefined,
+      sendMediaAsDocument: true,
+    });
   }
 
   // Re-inicializa todos los bots activos al arrancar el worker

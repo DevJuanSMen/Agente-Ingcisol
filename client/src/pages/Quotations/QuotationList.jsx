@@ -166,7 +166,7 @@ function WinnerModal({ quotationId, supplier, onClose, onSuccess }) {
 }
 
 // ── Comparative Table ───────────────────────────────────────────────────────
-function ComparativeTable({ quotation, onWinnerClick, onInviteClick }) {
+function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward, autoLoading }) {
   const comp = quotation.comparison || { rows: [], suppliers: [], favoritoSupplierId: null };
   const rows = comp.rows || [];
 
@@ -194,9 +194,16 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick }) {
         <span className="text-slate-300">|</span>
         <span>{suppliers.length} cotizaciones</span>
         {!isApproved && (
-          <Button size="sm" variant="secondary" className="ml-auto" onClick={onInviteClick}>
-            + Invitar proveedores
-          </Button>
+          <div className="ml-auto flex gap-2">
+            {suppliers.length > 1 && (
+              <Button size="sm" variant="primary" loading={autoLoading} onClick={onAutoAward}>
+                Adjudicar por mejor precio
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" onClick={onInviteClick}>
+              + Invitar proveedores
+            </Button>
+          </div>
         )}
       </div>
 
@@ -333,8 +340,22 @@ function QuotationCard({ q, onRefresh }) {
   const [expanded, setExpanded]     = useState(false);
   const [inviteModal, setInvite]    = useState(false);
   const [winnerModal, setWinner]    = useState(null); // { id, nombre }
+  const [autoLoading, setAutoLoading] = useState(false);
 
   const estado = ESTADO_COLOR[q.estado] || 'bg-slate-100 text-slate-600';
+
+  const handleAutoAward = async () => {
+    if (!window.confirm('Se repartirá cada ítem al proveedor de menor precio y se generará una OC por proveedor. ¿Continuar?')) return;
+    setAutoLoading(true);
+    try {
+      await api.post(`/quotations/${q.id}/winners`, { auto: true });
+      onRefresh();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al adjudicar');
+    } finally {
+      setAutoLoading(false);
+    }
+  };
 
   return (
     <div className="border border-slate-200 rounded-2xl overflow-hidden">
@@ -395,17 +416,26 @@ function QuotationCard({ q, onRefresh }) {
             quotation={q}
             onWinnerClick={(sup) => setWinner(sup)}
             onInviteClick={() => setInvite(true)}
+            onAutoAward={handleAutoAward}
+            autoLoading={autoLoading}
             onRefresh={onRefresh}
           />
 
-          {/* OC info */}
-          {q.purchaseOrder && (
-            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800 space-y-1">
-              <p className="font-semibold">Orden de Compra emitida: {q.purchaseOrder.consecutivo}</p>
-              {q.purchaseOrder.fechaEntregaPactada && (
-                <p>Entrega pactada: {fmtDate(q.purchaseOrder.fechaEntregaPactada)}</p>
-              )}
-              <p>Valor total: <strong>{fmtCOP(q.purchaseOrder.montoTotal)}</strong></p>
+          {/* OC info (puede haber varias por adjudicación dividida) */}
+          {(q.purchaseOrders?.length > 0) && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800 space-y-2">
+              <p className="font-semibold">
+                {q.purchaseOrders.length > 1
+                  ? `${q.purchaseOrders.length} Órdenes de Compra emitidas`
+                  : 'Orden de Compra emitida'}
+              </p>
+              {q.purchaseOrders.map((oc) => (
+                <div key={oc.id} className="flex items-center justify-between gap-2 border-t border-green-100 pt-1 first:border-0 first:pt-0">
+                  <span className="font-medium">{oc.consecutivo}</span>
+                  <span>{fmtCOP(oc.montoTotal)}</span>
+                  {oc.fechaEntregaPactada && <span className="text-green-600">Entrega {fmtDate(oc.fechaEntregaPactada)}</span>}
+                </div>
+              ))}
             </div>
           )}
         </div>

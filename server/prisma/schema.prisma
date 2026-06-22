@@ -58,6 +58,7 @@ enum EstadoRequisicion {
   EN_COTIZACION
   OC_EMITIDA
   CERRADA
+  EXPIRADA
 }
 
 enum Prioridad {
@@ -258,6 +259,7 @@ model Supplier {
   whatsapp   String?
   email      String?
   homologado Boolean         @default(false)
+  activo     Boolean         @default(true)
   rutUrl     String?
   camaraUrl  String?
   origen     OrigenProveedor @default(LOCAL)
@@ -321,24 +323,26 @@ model Quotation {
   proveedorGanador Supplier?         @relation("proveedorGanador", fields: [proveedorGanadorId], references: [id])
   items            QuotationItem[]
   invites          QuotationInvite[]
-  purchaseOrder    PurchaseOrder?
+  purchaseOrders   PurchaseOrder[]
 }
 
 model QuotationItem {
-  id             String        @id @default(cuid())
-  quotationId    String
-  supplierId     String
-  itemApuId      String?
-  descripcion    String?
-  precioUnitario Decimal       @db.Decimal(15, 2)
-  precioTotal    Decimal       @db.Decimal(15, 2)
-  tiempoEntrega  Int           @default(0)
-  fuente         FuentePrecio  @default(HISTORIAL)
-  confiabilidad  Confiabilidad @default(REFERENCIA)
+  id              String        @id @default(cuid())
+  quotationId     String
+  supplierId      String
+  itemApuId       String?
+  purchaseOrderId String?
+  descripcion     String?
+  precioUnitario  Decimal       @db.Decimal(15, 2)
+  precioTotal     Decimal       @db.Decimal(15, 2)
+  tiempoEntrega   Int           @default(0)
+  fuente          FuentePrecio  @default(HISTORIAL)
+  confiabilidad   Confiabilidad @default(REFERENCIA)
 
-  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
-  supplier  Supplier  @relation(fields: [supplierId], references: [id])
-  itemAPU   ItemAPU?  @relation(fields: [itemApuId], references: [id], onDelete: SetNull)
+  quotation     Quotation      @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  itemAPU       ItemAPU?       @relation(fields: [itemApuId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
 }
 
 model QuotationInvite {
@@ -359,7 +363,7 @@ model QuotationInvite {
 model PurchaseOrder {
   id                  String      @id @default(cuid())
   consecutivo         String      @unique
-  quotationId         String      @unique
+  quotationId         String
   supplierId          String
   estado              EstadoOrden @default(EMITIDA)
   montoTotal          Decimal     @db.Decimal(15, 2)
@@ -367,14 +371,15 @@ model PurchaseOrder {
   fechaEntregaPactada DateTime?
   fechaEntregaReal    DateTime?
   fechaPago           DateTime?
-  pdfUrl              String?
+  pdfUrl              String?     @db.Text
   alertaEnviada       Boolean     @default(false)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
-  quotation    Quotation      @relation(fields: [quotationId], references: [id])
-  proveedor    Supplier       @relation("proveedor", fields: [supplierId], references: [id])
-  priceHistory PriceHistory[]
+  quotation        Quotation       @relation(fields: [quotationId], references: [id])
+  proveedor        Supplier        @relation("proveedor", fields: [supplierId], references: [id])
+  itemsAdjudicados QuotationItem[]
+  priceHistory     PriceHistory[]
 }
 
 model PriceHistory {

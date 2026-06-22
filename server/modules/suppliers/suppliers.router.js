@@ -40,8 +40,13 @@ router.put('/:id', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, n
 
 router.delete('/:id', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
   try {
-    await deleteSupplier(req.user.companyId, req.params.id);
-    ok(res, { message: 'Proveedor eliminado' });
+    const result = await deleteSupplier(req.user.companyId, req.params.id);
+    ok(res, {
+      message: result.archived
+        ? 'Proveedor archivado (tenía historial de compras; se conservó la trazabilidad).'
+        : 'Proveedor eliminado',
+      archived: result.archived,
+    });
   } catch (err) { next(err); }
 });
 

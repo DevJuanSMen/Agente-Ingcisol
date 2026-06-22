@@ -1,5 +1,7 @@
 const prisma = require('../../shared/db');
+const redis = require('../../shared/redis');
 const { logger } = require('../../shared/utils/logger');
+const { publishCommand } = require('./bot.ipc');
 const apuService = require('../apu/apu.service');
 const requisitionsService = require('../requisitions/requisitions.service');
 
@@ -97,7 +99,7 @@ const handleCommand = async (t, companyId, rol) => {
   // ── Proveedores ────────────────────────────────────────────────────────
   if (t === 'proveedores' || t === 'lista proveedores') {
     const suppliers = await prisma.supplier.findMany({
-      where: { companyId },
+      where: { companyId, activo: true },
       orderBy: { nombre: 'asc' },
       take: 20,
     });
@@ -112,7 +114,7 @@ const handleCommand = async (t, companyId, rol) => {
   if (t.startsWith('proveedor ')) {
     const q = t.replace(/^proveedor\s+/, '').trim();
     const results = await prisma.supplier.findMany({
-      where: { companyId, nombre: { contains: q, mode: 'insensitive' } },
+      where: { companyId, activo: true, nombre: { contains: q, mode: 'insensitive' } },
       take: 5,
     });
     if (!results.length) return `No encontré proveedores con nombre _"${q}"_.`;
@@ -262,7 +264,7 @@ const buildDbContext = async (companyId) => {
         select: { consecutivo: true, estado: true, montoTotal: true, fechaEntregaPactada: true, proveedor: { select: { nombre: true } } },
       }),
       prisma.supplier.findMany({
-        where: { companyId },
+        where: { companyId, activo: true },
         select: { nombre: true, segmento: true, ciudad: true },
         orderBy: { nombre: 'asc' },
         take: 20,
@@ -442,6 +444,18 @@ Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica 
       where: { id: invite.id },
       data: { respondido: true, respondedAt: new Date() },
     });
+
+    // ¿Ya respondieron todos los proveedores invitados? → avisar al director
+    // por WhatsApp para que adjudique al/los ganador(es).
+    const pendientes = await prisma.quotationInvite.count({
+      where: { quotationId: quotation.id, respondido: false },
+    });
+    if (pendientes === 0) {
+      await publishCommand(redis, 'notify_winner_selection', {
+        companyId,
+        quotationId: quotation.id,
+      }).catch(() => {});
+    }
 
     // Notificar in-app a directores
     const directors = await prisma.user.findMany({

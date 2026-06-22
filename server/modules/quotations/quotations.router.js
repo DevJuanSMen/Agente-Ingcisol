@@ -48,7 +48,7 @@ router.post('/:id/items', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
   } catch (err) { next(err); }
 });
 
-// Seleccionar ganador y emitir OC
+// Seleccionar ganador y emitir OC (un solo proveedor)
 router.put('/:id/winner', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
   try {
     const { supplierId, fechaEntregaPactada } = req.body;
@@ -60,6 +60,29 @@ router.put('/:id/winner', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
       req.params.id,
       supplierId,
       fechaEntregaPactada,
+      req.user.id
+    );
+    ok(res, result);
+  } catch (err) { next(err); }
+});
+
+// Adjudicación dividida: varios proveedores, una OC por proveedor.
+// body: { awards: [{ supplierId, quotationItemIds?, fechaEntregaPactada? }] }
+//       o { auto: true } para repartir cada ítem al de menor precio.
+router.post('/:id/winners', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+  try {
+    let { awards } = req.body;
+    if (req.body.auto) {
+      const quotation = await quotationsService.getQuotation(req.user.companyId, req.params.id);
+      awards = quotationsService.buildRecommendedAwards(quotation);
+    }
+    if (!Array.isArray(awards) || awards.length === 0) {
+      return res.status(400).json({ error: true, message: 'Se requiere awards o auto:true' });
+    }
+    const result = await quotationsService.selectWinners(
+      req.user.companyId,
+      req.params.id,
+      awards,
       req.user.id
     );
     ok(res, result);

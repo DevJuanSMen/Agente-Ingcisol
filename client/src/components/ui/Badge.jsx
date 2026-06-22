@@ -8,6 +8,7 @@ const STATUS_MAP = {
   EN_COTIZACION:   'bg-purple-100 text-purple-700',
   OC_EMITIDA:      'bg-indigo-100 text-indigo-700',
   CERRADA:         'bg-slate-100 text-slate-500',
+  EXPIRADA:        'bg-zinc-200 text-zinc-600',
 
   // Órdenes de compra
   EMITIDA:         'bg-blue-100 text-blue-700',

@@ -9,12 +9,23 @@ process.on('unhandledRejection', (reason) => {
 const cron = require('node-cron');
 const { logger } = require('./shared/utils/logger');
 const prisma = require('./shared/db');
+const redis = require('./shared/redis');
 const botManager = require('./modules/whatsapp/bot.manager');
+const botFlows = require('./modules/whatsapp/bot.flows');
+const { enqueueText, enqueueDocument } = require('./modules/whatsapp/sendQueue');
 const { subscribeToCommands } = require('./modules/whatsapp/bot.ipc');
+const { generateOrderPdf, generateConsolidatedPdf, normalizeAwardedItems } = require('./shared/pdf/orderPdf');
+const requisitionsService = require('./modules/requisitions/requisitions.service');
+const quotationsService = require('./modules/quotations/quotations.service');
 
 logger.info('Worker PROCURA AI iniciado');
 
-// ── IPC: comandos desde el API ─────────────────────────────────────────────
+const fmtCOP = (v) =>
+  new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(
+    Number(v) || 0
+  );
+
+// ── IPC: comandos desde el API / bot ────────────────────────────────────────
 subscribeToCommands(async (cmd) => {
   logger.info('[worker] Comando recibido:', cmd);
   try {
@@ -24,8 +35,12 @@ subscribeToCommands(async (cmd) => {
       await botManager.destroyCompany(cmd.companyId);
     } else if (cmd.action === 'send_quote_requests') {
       await sendQuoteRequests(cmd.companyId, cmd.quotationId);
-    } else if (cmd.action === 'send_po_notification') {
-      await sendPoNotification(cmd.companyId, cmd.orderId);
+    } else if (cmd.action === 'notify_req_for_approval') {
+      await notifyReqForApproval(cmd.companyId, cmd.requisitionId, cmd.excludeUserId);
+    } else if (cmd.action === 'notify_winner_selection') {
+      await notifyWinnerSelection(cmd.companyId, cmd.quotationId);
+    } else if (cmd.action === 'send_po_documents') {
+      await sendPoDocuments(cmd.companyId, cmd.orderIds);
     }
   } catch (err) {
     logger.error('[worker] Error procesando comando:', err.message);
@@ -36,6 +51,163 @@ subscribeToCommands(async (cmd) => {
 botManager.restoreActiveSessions().catch((err) =>
   logger.error('[worker] Error restaurando sesiones:', err.message)
 );
+
+// ── Notificar al director una requisición para aprobar ──────────────────────
+async function notifyReqForApproval(companyId, requisitionId, excludeUserId) {
+  const req = await requisitionsService.getRequisition(companyId, requisitionId);
+  const analysis = await requisitionsService.analyzeRequisitionBudget(companyId, requisitionId).catch(() => null);
+  const msg = botFlows.buildRequisitionApprovalMsg(req, analysis);
+
+  const directors = await prisma.user.findMany({
+    where: {
+      companyId,
+      rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] },
+      activo: true,
+      whatsapp: { not: null },
+    },
+    select: { id: true, whatsapp: true },
+  });
+
+  for (const d of directors) {
+    if (d.id === excludeUserId) continue;
+    await botFlows.setPending(companyId, d.id, {
+      type: 'APPROVE_REQ',
+      requisitionId,
+      consecutivo: req.consecutivo,
+    });
+    enqueueText(companyId, d.whatsapp, msg);
+  }
+  logger.info(`[worker] Requisición ${req.consecutivo} enviada a ${directors.length} director(es) para aprobar`);
+}
+
+// ── Notificar al director que ya puede adjudicar ────────────────────────────
+async function notifyWinnerSelection(companyId, quotationId) {
+  const quotation = await quotationsService.getQuotation(companyId, quotationId);
+  if (quotation.estado === 'APROBADA') return; // ya adjudicada
+  const comparison = quotation.comparison;
+  const options = (comparison?.suppliers || []).map((s) => ({
+    id: s.id,
+    nombre: s.nombre,
+    total: s.total,
+    count: s.count,
+  }));
+  if (options.length === 0) {
+    logger.info(`[worker] Cotización ${quotationId} sin proveedores que cotizaran — no se notifica`);
+    return;
+  }
+
+  const consecutivo = quotation.requisition.consecutivo;
+  const msg = botFlows.buildWinnerSelectionMsg(consecutivo, comparison, options);
+
+  const directors = await prisma.user.findMany({
+    where: {
+      companyId,
+      rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] },
+      activo: true,
+      whatsapp: { not: null },
+    },
+    select: { id: true, whatsapp: true },
+  });
+
+  for (const d of directors) {
+    await botFlows.setPending(companyId, d.id, {
+      type: 'SELECT_WINNER',
+      quotationId,
+      consecutivo,
+      options,
+    });
+    enqueueText(companyId, d.whatsapp, msg);
+  }
+  logger.info(`[worker] Adjudicación de ${consecutivo} ofrecida a ${directors.length} director(es)`);
+}
+
+// ── Generar y enviar PDFs de OC (proveedor + director + contabilidad) ────────
+async function sendPoDocuments(companyId, orderIds) {
+  if (!Array.isArray(orderIds) || !orderIds.length) return;
+
+  const orders = await prisma.purchaseOrder.findMany({
+    where: { id: { in: orderIds } },
+    include: {
+      proveedor: true,
+      itemsAdjudicados: { include: { itemAPU: true } },
+      quotation: {
+        include: {
+          requisition: {
+            include: { project: true, items: { include: { itemAPU: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!orders.length) return;
+
+  const company = await prisma.company.findUnique({ where: { id: companyId } });
+  const requisition = orders[0].quotation.requisition;
+  const project = requisition.project;
+  const reqItems = requisition.items;
+
+  // 1) PDF individual por proveedor (solo sus ítems) → al proveedor
+  const groups = [];
+  for (const order of orders) {
+    const items = normalizeAwardedItems(order.itemsAdjudicados, reqItems);
+    groups.push({ supplier: order.proveedor, order, items });
+
+    try {
+      const pdf = await generateOrderPdf({
+        company,
+        order,
+        supplier: order.proveedor,
+        items,
+        project,
+        requisition,
+      });
+      if (order.proveedor.whatsapp) {
+        enqueueDocument(
+          companyId,
+          order.proveedor.whatsapp,
+          pdf.toString('base64'),
+          `${order.consecutivo}.pdf`,
+          `🎉 *${order.proveedor.nombre}*, fue seleccionado como proveedor.\n` +
+            `Orden de compra *${order.consecutivo}* — ${fmtCOP(order.montoTotal)}.\n` +
+            `Por favor confirme recibo y fecha de entrega.`
+        );
+      } else {
+        logger.info(`[worker] Proveedor ${order.proveedor.nombre} sin WhatsApp — no se envía OC`);
+      }
+    } catch (err) {
+      logger.error(`[worker] Error generando OC ${order.consecutivo}: ${err.message}`);
+    }
+  }
+
+  // 2) PDF consolidado (todos los ítems con su proveedor) → director + contabilidad
+  try {
+    const consolidated = await generateConsolidatedPdf({ company, requisition, project, groups });
+    const b64 = consolidated.toString('base64');
+    const totalGlobal = orders.reduce((a, o) => a + Number(o.montoTotal), 0);
+
+    const recipients = await prisma.user.findMany({
+      where: {
+        companyId,
+        rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR', 'CONTABILIDAD'] },
+        activo: true,
+        whatsapp: { not: null },
+      },
+      select: { whatsapp: true },
+    });
+
+    const caption =
+      `📄 *Orden de compra — ${requisition.consecutivo}*\n` +
+      `${orders.length} OC · ${groups.length} proveedor(es) · Total ${fmtCOP(totalGlobal)}\n` +
+      `Documento para el área financiera.`;
+
+    for (const r of recipients) {
+      enqueueDocument(companyId, r.whatsapp, b64, `OC-${requisition.consecutivo}.pdf`, caption);
+    }
+    logger.info(`[worker] OC consolidada de ${requisition.consecutivo} encolada a ${recipients.length} destinatario(s)`);
+  } catch (err) {
+    logger.error(`[worker] Error generando OC consolidada: ${err.message}`);
+  }
+}
 
 // ── Envío de solicitudes de cotización a proveedores ────────────────────────
 async function sendQuoteRequests(companyId, quotationId) {
@@ -51,19 +223,18 @@ async function sendQuoteRequests(companyId, quotationId) {
       invites: true,
     },
   });
-  if (!quotation) { logger.warn(`[worker] Cotización ${quotationId} no encontrada`); return; }
+  if (!quotation) {
+    logger.warn(`[worker] Cotización ${quotationId} no encontrada`);
+    return;
+  }
 
   const req = quotation.requisition;
   const items = req.items;
 
-  // Construir texto de la solicitud
-  const itemLines = items.map((it, i) =>
-    `${i + 1}. ${it.descripcion} — ${it.cantidad} ${it.unidad}`
-  ).join('\n');
+  const itemLines = items.map((it, i) => `${i + 1}. ${it.descripcion} — ${it.cantidad} ${it.unidad}`).join('\n');
 
-  // Encontrar proveedores con WhatsApp registrado de esta empresa
   const suppliers = await prisma.supplier.findMany({
-    where: { companyId, whatsapp: { not: null } },
+    where: { companyId, activo: true, whatsapp: { not: null } },
     select: { id: true, nombre: true, whatsapp: true },
   });
 
@@ -82,93 +253,35 @@ async function sendQuoteRequests(companyId, quotationId) {
     : 'Sin fecha límite';
 
   for (const supplier of suppliers) {
-    try {
-      const msg =
-        `🏗️ *PROCURA AI — Solicitud de Cotización*\n\n` +
-        `Estimado(a) *${supplier.nombre}*,\n\n` +
-        `La empresa *${company?.razonSocial || 'PROCURA AI'}* solicita su mejor precio para:\n\n` +
-        `${itemLines}\n\n` +
-        `📋 Requisición: *${req.consecutivo}*\n` +
-        `🏗️ Proyecto: *${req.project.nombre}*\n` +
-        `📅 Fecha límite: *${fechaLimite}*\n\n` +
-        `Por favor responda con el precio unitario de cada ítem que pueda suministrar y el tiempo de entrega.\n` +
-        `_Ej: "Cemento 28000, Arena 45000, Entrega 3 días"_`;
+    const msg =
+      `🏗️ *PROCURA AI — Solicitud de Cotización*\n\n` +
+      `Estimado(a) *${supplier.nombre}*,\n\n` +
+      `La empresa *${company?.razonSocial || 'PROCURA AI'}* solicita su mejor precio para:\n\n` +
+      `${itemLines}\n\n` +
+      `📋 Requisición: *${req.consecutivo}*\n` +
+      `🏗️ Proyecto: *${req.project.nombre}*\n` +
+      `📅 Fecha límite: *${fechaLimite}*\n\n` +
+      `Por favor responda con el precio unitario de cada ítem que pueda suministrar y el tiempo de entrega.\n` +
+      `_Ej: "Cemento 28000, Arena 45000, Entrega 3 días"_`;
 
-      await botManager.sendMessage(companyId, supplier.whatsapp, msg);
+    // Encolar envío (con delay anti-spam)
+    enqueueText(companyId, supplier.whatsapp, msg);
 
-      // Registrar o actualizar el invite
-      await prisma.quotationInvite.upsert({
+    // Registrar o actualizar el invite
+    await prisma.quotationInvite
+      .upsert({
         where: { quotationId_supplierId: { quotationId, supplierId: supplier.id } },
         update: { enviado: true, sentAt: new Date() },
         create: { quotationId, supplierId: supplier.id, enviado: true, sentAt: new Date() },
-      });
-
-      logger.info(`[worker] Solicitud enviada a ${supplier.nombre} (${supplier.whatsapp})`);
-    } catch (err) {
-      logger.error(`[worker] Error enviando a ${supplier.nombre}: ${err.message}`);
-    }
+      })
+      .catch((err) => logger.error(`[worker] Error registrando invite de ${supplier.nombre}: ${err.message}`));
   }
 
-  // Actualizar cotización a PENDIENTE_APROBACION si ya hay invites enviados
   await prisma.quotation.update({
     where: { id: quotationId },
     data: { estado: 'PENDIENTE_APROBACION' },
   });
-  logger.info(`[worker] Cotización ${quotationId}: solicitudes enviadas a ${suppliers.length} proveedores`);
-}
-
-// ── Notificación de OC al proveedor ganador ─────────────────────────────────
-async function sendPoNotification(companyId, orderId) {
-  const order = await prisma.purchaseOrder.findUnique({
-    where: { id: orderId },
-    include: {
-      proveedor: true,
-      quotation: {
-        include: {
-          requisition: { include: { project: { select: { nombre: true } } } },
-          items: { include: { itemAPU: true } },
-        },
-      },
-    },
-  });
-  if (!order) return;
-
-  const supplier = order.proveedor;
-  if (!supplier.whatsapp) {
-    logger.info(`[worker] Proveedor ${supplier.nombre} sin WhatsApp — no se notifica OC`);
-    return;
-  }
-
-  const fmtCOP = (v) =>
-    new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v);
-
-  const fechaEntrega = order.fechaEntregaPactada
-    ? new Date(order.fechaEntregaPactada).toLocaleDateString('es-CO')
-    : 'Por coordinar';
-
-  // Detalle de ítems que le compramos a este proveedor
-  const winnerItems = (order.quotation.items || []).filter((qi) => qi.supplierId === order.supplierId);
-  const itemLines = winnerItems
-    .map((qi) => `• ${qi.descripcion || qi.itemAPU?.descripcion || 'Ítem'} — ${fmtCOP(qi.precioUnitario)}`)
-    .join('\n');
-
-  const msg =
-    `🎉 *PROCURA AI — ¡Fue seleccionado como proveedor!*\n\n` +
-    `Estimado(a) *${supplier.nombre}*,\n\n` +
-    `Nos complace informarle que su cotización fue la *ganadora*. Se realizará la compra con usted mediante la siguiente Orden de Compra:\n\n` +
-    `📋 OC: *${order.consecutivo}*\n` +
-    (itemLines ? `${itemLines}\n` : '') +
-    `💰 Monto total: *${fmtCOP(order.montoTotal)}*\n` +
-    `📅 Fecha de entrega pactada: *${fechaEntrega}*\n\n` +
-    `Por favor confirme recibo de esta orden y la fecha de entrega en obra.\n` +
-    `_PROCURA AI — Sistema de Gestión de Procura_`;
-
-  try {
-    await botManager.sendMessage(companyId, supplier.whatsapp, msg);
-    logger.info(`[worker] OC ${order.consecutivo} notificada a ${supplier.nombre}`);
-  } catch (err) {
-    logger.error(`[worker] Error notificando OC: ${err.message}`);
-  }
+  logger.info(`[worker] Cotización ${quotationId}: solicitudes encoladas a ${suppliers.length} proveedores`);
 }
 
 // ── Cron: alertas 48h antes de entrega ─────────────────────────────────────
@@ -188,11 +301,7 @@ cron.schedule('0 * * * *', async () => {
         proveedor: true,
         quotation: {
           include: {
-            requisition: {
-              include: {
-                project: { include: { company: { select: { id: true } } } },
-              },
-            },
+            requisition: { include: { project: { include: { company: { select: { id: true } } } } } },
           },
         },
       },
@@ -201,13 +310,11 @@ cron.schedule('0 * * * *', async () => {
     for (const orden of ordenes) {
       const companyId = orden.quotation.requisition.project.company.id;
       if (orden.proveedor.whatsapp) {
-        try {
-          await botManager.sendMessage(
-            companyId,
-            orden.proveedor.whatsapp,
-            `⚠️ *Recordatorio PROCURA AI*\n\nLa Orden de Compra *${orden.consecutivo}* vence en menos de 48 horas.\nFecha pactada: ${new Date(orden.fechaEntregaPactada).toLocaleDateString('es-CO')}`
-          );
-        } catch {}
+        enqueueText(
+          companyId,
+          orden.proveedor.whatsapp,
+          `⚠️ *Recordatorio PROCURA AI*\n\nLa Orden de Compra *${orden.consecutivo}* vence en menos de 48 horas.\nFecha pactada: ${new Date(orden.fechaEntregaPactada).toLocaleDateString('es-CO')}`
+        );
       }
 
       await prisma.purchaseOrder.update({
@@ -234,11 +341,7 @@ cron.schedule('30 * * * *', async () => {
       include: {
         proveedor: true,
         quotation: {
-          include: {
-            requisition: {
-              include: { project: { include: { company: true } } },
-            },
-          },
+          include: { requisition: { include: { project: { include: { company: true } } } } },
         },
       },
     });
@@ -251,19 +354,28 @@ cron.schedule('30 * * * *', async () => {
         select: { whatsapp: true, nombre: true },
       });
       for (const d of directors) {
-        try {
-          await botManager.sendMessage(
-            companyId,
-            d.whatsapp,
-            `🔴 *Alerta PROCURA AI — OC Vencida*\n\nLa OC *${orden.consecutivo}* del proveedor *${orden.proveedor.nombre}* está vencida.\nFecha pactada: ${new Date(orden.fechaEntregaPactada).toLocaleDateString('es-CO')}\n\nRevisa el módulo de seguimiento.`
-          );
-        } catch {}
+        enqueueText(
+          companyId,
+          d.whatsapp,
+          `🔴 *Alerta PROCURA AI — OC Vencida*\n\nLa OC *${orden.consecutivo}* del proveedor *${orden.proveedor.nombre}* está vencida.\nFecha pactada: ${new Date(orden.fechaEntregaPactada).toLocaleDateString('es-CO')}\n\nRevisa el módulo de seguimiento.`
+        );
       }
     }
 
     logger.info(`[worker] OC vencidas detectadas: ${vencidas.length}`);
   } catch (err) {
     logger.error('[worker] Error en escalada:', err.message);
+  }
+});
+
+// ── Cron: expiración de requisiciones vencidas (diario 06:15) ───────────────
+cron.schedule('15 6 * * *', async () => {
+  logger.info('[worker] Revisando requisiciones vencidas...');
+  try {
+    const n = await requisitionsService.expireRequisitions();
+    logger.info(`[worker] Requisiciones marcadas como EXPIRADA: ${n}`);
+  } catch (err) {
+    logger.error('[worker] Error expirando requisiciones:', err.message);
   }
 });
 
@@ -278,7 +390,10 @@ cron.schedule('0 12 * * 1', async () => {
 
       const [activas, pendientes] = await Promise.all([
         prisma.purchaseOrder.count({
-          where: { estado: { in: ['EMITIDA', 'ENVIADA'] }, quotation: { requisition: { project: { companyId: company.id } } } },
+          where: {
+            estado: { in: ['EMITIDA', 'ENVIADA'] },
+            quotation: { requisition: { project: { companyId: company.id } } },
+          },
         }),
         prisma.requisition.count({
           where: { project: { companyId: company.id }, estado: { in: ['ENVIADA', 'PENDIENTE_JUST'] } },
@@ -290,23 +405,18 @@ cron.schedule('0 12 * * 1', async () => {
         select: { whatsapp: true },
       });
       for (const d of directors) {
-        try {
-          await botManager.sendMessage(
-            company.id,
-            d.whatsapp,
-            `📊 *Reporte Semanal — PROCURA AI*\n\n` +
+        enqueueText(
+          company.id,
+          d.whatsapp,
+          `📊 *Reporte Semanal — PROCURA AI*\n\n` +
             `Empresa: *${company.razonSocial}*\n` +
             `📦 OC activas: ${activas}\n` +
             `📋 Req. pendientes de aprobación: ${pendientes}\n\n` +
             `_Lunes — resumen semanal_`
-          );
-        } catch {}
+        );
       }
     }
   } catch (err) {
     logger.error('[worker] Error en reporte semanal:', err.message);
   }
 });
-
-// Importar redis para el reporte semanal
-const redis = require('./shared/redis');

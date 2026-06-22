@@ -1,5 +1,6 @@
 const prisma = require('../../shared/db');
 const notifications = require('../notifications/notifications.service');
+const { generateOrderPdf, normalizeAwardedItems } = require('../../shared/pdf/orderPdf');
 
 const generateConsecutivoOC = async (companyId) => {
   const year = new Date().getFullYear();
@@ -160,6 +161,53 @@ const registerPayment = async (companyId, orderId, userId) => {
   return updated;
 };
 
+// Genera el PDF de una OC para descarga desde el dashboard / área financiera.
+// Devuelve { buffer, filename }.
+const generateOrderDocument = async (companyId, orderId) => {
+  const order = await prisma.purchaseOrder.findFirst({
+    where: {
+      id: orderId,
+      quotation: { requisition: { project: { companyId } } },
+    },
+    include: {
+      proveedor: true,
+      itemsAdjudicados: { include: { itemAPU: true } },
+      quotation: {
+        include: {
+          items: { include: { itemAPU: true } },
+          requisition: {
+            include: { project: true, items: { include: { itemAPU: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!order) throw Object.assign(new Error('Orden de compra no encontrada'), { statusCode: 404 });
+
+  const company = await prisma.company.findUnique({ where: { id: companyId } });
+  const requisition = order.quotation.requisition;
+  const reqItems = requisition.items;
+
+  // Ítems adjudicados a esta OC; fallback a filtro por proveedor para OC legacy
+  const adjItems =
+    order.itemsAdjudicados && order.itemsAdjudicados.length
+      ? order.itemsAdjudicados
+      : order.quotation.items.filter((qi) => qi.supplierId === order.supplierId);
+
+  const items = normalizeAwardedItems(adjItems, reqItems);
+
+  const buffer = await generateOrderPdf({
+    company,
+    order,
+    supplier: order.proveedor,
+    items,
+    project: requisition.project,
+    requisition,
+  });
+
+  return { buffer, filename: `${order.consecutivo}.pdf` };
+};
+
 const cancelOrder = async (companyId, orderId, userId) => {
   const order = await getOrder(companyId, orderId);
   if (order.estado === 'ENTREGADA') {
@@ -172,4 +220,11 @@ const cancelOrder = async (companyId, orderId, userId) => {
   });
 };
 
-module.exports = { listOrders, getOrder, confirmDelivery, registerPayment, cancelOrder };
+module.exports = {
+  listOrders,
+  getOrder,
+  confirmDelivery,
+  registerPayment,
+  cancelOrder,
+  generateOrderDocument,
+};

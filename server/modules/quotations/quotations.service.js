@@ -46,8 +46,8 @@ const QUOTATION_INCLUDE = {
       supplier: { select: { id: true, nombre: true, whatsapp: true, segmento: true } },
     },
   },
-  purchaseOrder: {
-    select: { id: true, consecutivo: true, montoTotal: true, fechaEntregaPactada: true, estado: true },
+  purchaseOrders: {
+    select: { id: true, consecutivo: true, montoTotal: true, fechaEntregaPactada: true, estado: true, supplierId: true },
   },
 };
 
@@ -143,7 +143,12 @@ const listQuotations = async (companyId) => {
     orderBy: { createdAt: 'desc' },
   });
 
-  return quotations.map((q) => ({ ...q, comparison: computeComparison(q) }));
+  // purchaseOrder (singular) = primera OC, por compatibilidad con el front actual
+  return quotations.map((q) => ({
+    ...q,
+    purchaseOrder: q.purchaseOrders?.[0] || null,
+    comparison: computeComparison(q),
+  }));
 };
 
 // ── Detalle ──────────────────────────────────────────────────────────────────
@@ -151,14 +156,15 @@ const listQuotations = async (companyId) => {
 const getQuotation = async (companyId, quotationId) => {
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
-    include: {
-      ...QUOTATION_INCLUDE,
-      purchaseOrder: true,
-    },
+    include: QUOTATION_INCLUDE,
   });
   if (!quotation) throw Object.assign(new Error('Cotización no encontrada'), { statusCode: 404 });
 
-  return { ...quotation, comparison: computeComparison(quotation) };
+  return {
+    ...quotation,
+    purchaseOrder: quotation.purchaseOrders?.[0] || null,
+    comparison: computeComparison(quotation),
+  };
 };
 
 // ── Invitar proveedores manualmente desde el dashboard ───────────────────────
@@ -238,19 +244,51 @@ const addQuotationItem = async (companyId, quotationId, data) => {
   return item;
 };
 
-// ── Seleccionar ganador y crear OC ───────────────────────────────────────────
+// ── Adjudicación: ítems ganados por proveedor ────────────────────────────────
 
-const selectWinner = async (companyId, quotationId, supplierId, fechaEntregaPactada, userId) => {
+// Mismo criterio de casamiento que computeComparison.
+const itemMatches = (ri, qi) =>
+  (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
+  (qi.descripcion &&
+    ri.descripcion &&
+    qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim());
+
+// Construye la adjudicación recomendada: por cada ítem de la requisición, el
+// proveedor con menor precio unitario. Devuelve [{ supplierId, quotationItemIds }].
+const buildRecommendedAwards = (quotation) => {
+  const reqItems = quotation.requisition?.items || [];
+  const qItems = quotation.items || [];
+  const buckets = new Map(); // supplierId -> Set(quotationItemId)
+
+  for (const ri of reqItems) {
+    const candidatos = qItems.filter((qi) => itemMatches(ri, qi));
+    if (!candidatos.length) continue;
+    const best = candidatos.reduce((m, qi) =>
+      !m || Number(qi.precioUnitario) < Number(m.precioUnitario) ? qi : m
+    , null);
+    if (!buckets.has(best.supplierId)) buckets.set(best.supplierId, new Set());
+    buckets.get(best.supplierId).add(best.id);
+  }
+
+  return [...buckets.entries()].map(([supplierId, ids]) => ({
+    supplierId,
+    quotationItemIds: [...ids],
+  }));
+};
+
+// ── Seleccionar ganador(es) y crear OC ────────────────────────────────────────
+
+// Adjudicación múltiple. `awards`: [{ supplierId, quotationItemIds?, fechaEntregaPactada? }].
+// Si un award no trae quotationItemIds, toma TODOS los ítems cotizados por ese
+// proveedor (caso de un único ganador). Crea una OC por proveedor.
+const selectWinners = async (companyId, quotationId, awards, userId) => {
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: {
       requisition: {
         include: { project: { select: { companyId: true, nombre: true } }, items: true },
       },
-      items: {
-        where: { supplierId },
-        include: { itemAPU: true },
-      },
+      items: { include: { itemAPU: true } },
     },
   });
   if (!quotation || quotation.requisition.project.companyId !== companyId) {
@@ -259,81 +297,156 @@ const selectWinner = async (companyId, quotationId, supplierId, fechaEntregaPact
   if (quotation.estado === 'APROBADA') {
     throw Object.assign(new Error('Esta cotización ya fue aprobada'), { statusCode: 400 });
   }
-
-  const winnerItems = quotation.items;
-  if (winnerItems.length === 0) {
-    throw Object.assign(new Error('El proveedor seleccionado no tiene ítems cotizados'), { statusCode: 400 });
+  if (!Array.isArray(awards) || awards.length === 0) {
+    throw Object.assign(new Error('Se requiere al menos un proveedor a adjudicar'), { statusCode: 400 });
   }
 
-  const montoTotal = winnerItems.reduce((a, i) => a + Number(i.precioTotal), 0);
-  const maxEntrega = winnerItems.reduce((max, i) => Math.max(max, i.tiempoEntrega || 0), 0);
-  const fechaEntrega = fechaEntregaPactada
-    ? new Date(fechaEntregaPactada)
-    : maxEntrega > 0
-    ? new Date(Date.now() + maxEntrega * 24 * 60 * 60 * 1000)
-    : null;
+  const itemsById = new Map(quotation.items.map((qi) => [qi.id, qi]));
 
-  const consecutivoOC = await genConsecutivoOC();
+  // Resolver ítems de cada award y validar que ningún ítem se adjudique dos veces.
+  const usados = new Set();
+  const planned = awards.map((aw) => {
+    let items;
+    if (Array.isArray(aw.quotationItemIds) && aw.quotationItemIds.length) {
+      items = aw.quotationItemIds.map((id) => itemsById.get(id)).filter(Boolean);
+    } else {
+      items = quotation.items.filter((qi) => qi.supplierId === aw.supplierId);
+    }
+    if (!items.length) {
+      throw Object.assign(
+        new Error('Un proveedor seleccionado no tiene ítems cotizados'),
+        { statusCode: 400 }
+      );
+    }
+    for (const it of items) {
+      if (it.supplierId !== aw.supplierId) {
+        throw Object.assign(new Error('Un ítem no pertenece al proveedor indicado'), { statusCode: 400 });
+      }
+      if (usados.has(it.id)) {
+        throw Object.assign(new Error('Un ítem fue adjudicado a más de un proveedor'), { statusCode: 400 });
+      }
+      usados.add(it.id);
+    }
+    const montoTotal = items.reduce((a, i) => a + Number(i.precioTotal), 0);
+    const maxEntrega = items.reduce((max, i) => Math.max(max, i.tiempoEntrega || 0), 0);
+    const fechaEntrega = aw.fechaEntregaPactada
+      ? new Date(aw.fechaEntregaPactada)
+      : maxEntrega > 0
+      ? new Date(Date.now() + maxEntrega * 24 * 60 * 60 * 1000)
+      : null;
+    return { supplierId: aw.supplierId, items, montoTotal, fechaEntrega };
+  });
 
-  const [updatedQuotation, purchaseOrder] = await prisma.$transaction([
-    prisma.quotation.update({
+  // Consecutivos OC: base fija + índice (las filas de la transacción aún no están
+  // commiteadas, así que el count no cambia entre creaciones).
+  const year = new Date().getFullYear();
+  const baseCount = await prisma.purchaseOrder.count({
+    where: { consecutivo: { startsWith: `OC-${year}` } },
+  });
+  planned.forEach((p, i) => {
+    p.consecutivo = `OC-${year}-${String(baseCount + i + 1).padStart(3, '0')}`;
+  });
+
+  // Proveedor "principal" para back-compat de Quotation.proveedorGanadorId:
+  // el que cubre más ítems.
+  const principal = planned.reduce((m, p) => (!m || p.items.length > m.items.length ? p : m), null);
+
+  const created = await prisma.$transaction(async (tx) => {
+    await tx.quotation.update({
       where: { id: quotationId },
-      data: { estado: 'APROBADA', proveedorGanadorId: supplierId },
-    }),
-    prisma.purchaseOrder.create({
-      data: {
-        consecutivo: consecutivoOC,
-        quotationId,
-        supplierId,
-        montoTotal,
-        fechaEntregaPactada: fechaEntrega,
-        estado: 'EMITIDA',
-      },
-    }),
-    prisma.requisition.update({
+      data: { estado: 'APROBADA', proveedorGanadorId: principal.supplierId },
+    });
+    await tx.requisition.update({
       where: { id: quotation.requisitionId },
       data: { estado: 'OC_EMITIDA' },
-    }),
-    prisma.auditLog.create({
-      data: {
-        companyId,
-        userId, // director/apoyo que selecciona el ganador
-        accion: 'EMITIR_OC',
-        entidad: 'PurchaseOrder',
-        entidadId: consecutivoOC,
-        metadata: { consecutivo: consecutivoOC, montoTotal, supplierId },
-      },
-    }),
-  ]);
+    });
 
-  // Guardar historial de precios
-  for (const item of winnerItems) {
-    if (item.itemApuId) {
-      await prisma.priceHistory.create({
+    const orders = [];
+    for (const p of planned) {
+      const po = await tx.purchaseOrder.create({
+        data: {
+          consecutivo: p.consecutivo,
+          quotationId,
+          supplierId: p.supplierId,
+          montoTotal: p.montoTotal,
+          fechaEntregaPactada: p.fechaEntrega,
+          estado: 'EMITIDA',
+        },
+      });
+      // Enlazar los ítems adjudicados a esta OC
+      await tx.quotationItem.updateMany({
+        where: { id: { in: p.items.map((i) => i.id) } },
+        data: { purchaseOrderId: po.id },
+      });
+      await tx.auditLog.create({
         data: {
           companyId,
-          supplierId,
-          itemApuId: item.itemApuId,
-          precioUnitario: item.precioUnitario,
-          purchaseOrderId: purchaseOrder.id,
+          userId,
+          accion: 'EMITIR_OC',
+          entidad: 'PurchaseOrder',
+          entidadId: p.consecutivo,
+          metadata: { consecutivo: p.consecutivo, montoTotal: p.montoTotal, supplierId: p.supplierId },
         },
-      }).catch(() => {}); // no bloquear si falla el historial
+      });
+      orders.push(po);
+    }
+    return orders;
+  });
+
+  // Historial de precios (fuera de la transacción, no bloqueante)
+  for (let i = 0; i < planned.length; i++) {
+    const po = created[i];
+    for (const item of planned[i].items) {
+      if (item.itemApuId) {
+        await prisma.priceHistory
+          .create({
+            data: {
+              companyId,
+              supplierId: planned[i].supplierId,
+              itemApuId: item.itemApuId,
+              precioUnitario: item.precioUnitario,
+              purchaseOrderId: po.id,
+            },
+          })
+          .catch(() => {});
+      }
     }
   }
+
+  const montoGlobal = planned.reduce((a, p) => a + p.montoTotal, 0);
 
   // Notificaciones in-app
   await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR', 'CONTABILIDAD'], {
     tipo: 'OC_EMITIDA',
-    titulo: `OC ${consecutivoOC} emitida`,
-    mensaje: `Proveedor ganador seleccionado. Monto: $${montoTotal.toLocaleString('es-CO')}`,
+    titulo:
+      created.length > 1
+        ? `${created.length} OC emitidas (${created.map((o) => o.consecutivo).join(', ')})`
+        : `OC ${created[0].consecutivo} emitida`,
+    mensaje: `Adjudicación realizada. Monto: $${montoGlobal.toLocaleString('es-CO')}`,
     entidad: 'PurchaseOrder',
-    entidadId: purchaseOrder.id,
+    entidadId: created[0].id,
   });
 
-  // Enviar notificación WhatsApp al proveedor ganador
-  await publishCommand(redis, 'send_po_notification', { companyId, orderId: purchaseOrder.id });
+  // Generar y enviar PDFs por WhatsApp (proveedores + director + contabilidad)
+  await publishCommand(redis, 'send_po_documents', {
+    companyId,
+    orderIds: created.map((o) => o.id),
+  }).catch(() => {});
 
-  return { quotation: updatedQuotation, purchaseOrder };
+  return { quotationId, orders: created };
 };
 
-module.exports = { listQuotations, getQuotation, inviteSuppliers, addQuotationItem, selectWinner };
+// Wrapper de un único ganador (compatibilidad con el dashboard actual).
+const selectWinner = (companyId, quotationId, supplierId, fechaEntregaPactada, userId) =>
+  selectWinners(companyId, quotationId, [{ supplierId, fechaEntregaPactada }], userId);
+
+module.exports = {
+  listQuotations,
+  getQuotation,
+  inviteSuppliers,
+  addQuotationItem,
+  selectWinner,
+  selectWinners,
+  buildRecommendedAwards,
+  computeComparison,
+};
