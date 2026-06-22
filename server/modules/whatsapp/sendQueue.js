@@ -8,6 +8,9 @@ const botManager = require('./bot.manager');
 const MIN_MS = Number(process.env.WA_SEND_MIN_MS) || 4000;
 const MAX_MS = Number(process.env.WA_SEND_MAX_MS) || 10000;
 const MAX_RETRIES = 2;
+// Cuántas veces esperamos (sin gastar reintentos) a que el cliente esté listo.
+const NOT_READY_WAIT_MS = 5000;
+const MAX_NOT_READY_WAITS = 60; // ~5 min máximo esperando readiness
 
 const queue = [];
 let processing = false;
@@ -28,6 +31,22 @@ async function processQueue() {
   processing = true;
   while (queue.length) {
     const job = queue.shift();
+
+    // Si el cliente aún no está listo, esperamos sin consumir reintentos: el
+    // bot puede tardar en arrancar Chromium / cargar WhatsApp Web o reconectar.
+    if (!botManager.isReady(job.companyId)) {
+      job.notReadyWaits = (job.notReadyWaits || 0) + 1;
+      if (job.notReadyWaits <= MAX_NOT_READY_WAITS) {
+        queue.push(job);
+        await sleep(NOT_READY_WAIT_MS);
+        continue;
+      }
+      logger.error(
+        `[sendQueue] Descartado envío a ${job.phone}: cliente de empresa ${job.companyId} nunca estuvo listo`
+      );
+      continue;
+    }
+
     try {
       await deliver(job);
       logger.info(

@@ -25,6 +25,13 @@ class BotManager {
   constructor() {
     this.clients = new Map(); // companyId -> Client
     this.retryTimers = new Map(); // companyId -> Timer
+    this.ready = new Set(); // companyIds con el store de WhatsApp Web ya inyectado
+  }
+
+  // ¿El cliente está realmente listo para enviar? Tener el Client en el mapa no
+  // basta: el store interno (window.Store) solo existe tras el evento 'ready'.
+  isReady(companyId) {
+    return this.ready.has(companyId);
   }
 
   _keys(companyId) {
@@ -76,11 +83,13 @@ class BotManager {
 
     client.on('ready', async () => {
       logger.info(`[bot:${companyId}] Listo`);
+      this.ready.add(companyId);
       await redis.set(k.status, 'ready');
     });
 
     client.on('disconnected', async (reason) => {
       logger.warn(`[bot:${companyId}] Desconectado: ${reason}`);
+      this.ready.delete(companyId);
       await redis.set(k.status, 'disconnected');
       this.clients.delete(companyId);
 
@@ -154,6 +163,7 @@ class BotManager {
 
     client.initialize().catch((err) => {
       logger.error(`[bot:${companyId}] Error al inicializar: ${err.message}`);
+      this.ready.delete(companyId);
       redis.set(k.status, 'error');
       this.clients.delete(companyId);
     });
@@ -167,6 +177,7 @@ class BotManager {
     if (!client) return;
 
     try { await client.destroy(); } catch {}
+    this.ready.delete(companyId);
     this.clients.delete(companyId);
     await redis.set(this._keys(companyId).status, 'disconnected');
     logger.info(`[bot:${companyId}] Destruido`);
@@ -176,6 +187,7 @@ class BotManager {
   async sendMessage(companyId, phone, text) {
     const client = this.clients.get(companyId);
     if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
+    if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
     const sanitized = phone.replace(/\D/g, '');
     return client.sendMessage(`${sanitized}@c.us`, text);
   }
@@ -184,6 +196,7 @@ class BotManager {
   async sendDocument(companyId, phone, base64, filename, caption) {
     const client = this.clients.get(companyId);
     if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
+    if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
     const sanitized = phone.replace(/\D/g, '');
     const media = new MessageMedia('application/pdf', base64, filename || 'documento.pdf');
     return client.sendMessage(`${sanitized}@c.us`, media, {
