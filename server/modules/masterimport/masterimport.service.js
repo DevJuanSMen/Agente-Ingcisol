@@ -46,7 +46,7 @@ const confirmImport = async (companyId, payload) => {
   // existe se actualiza, lo nuevo se crea, y nada se duplica.
   const existing = await prisma.itemAPU.findMany({
     where: { projectId: activeProject.id },
-    select: { id: true, codigo: true, cantidad: true, saldoCantidad: true },
+    select: { id: true, codigo: true, cantidad: true, saldoCantidad: true, saldoValor: true, precioUnitario: true },
   });
   const existingByCode = new Map(existing.map((e) => [e.codigo, e]));
 
@@ -66,8 +66,14 @@ const confirmImport = async (companyId, payload) => {
 
       const prev = existingByCode.get(codigo);
       // El saldo se reinicia a la nueva cantidad solo si el ítem es nuevo o no ha
-      // tenido consumo (saldo == cantidad). Si ya hubo consumo, se preserva.
-      const reiniciarSaldo = !prev || Number(prev.saldoCantidad) === Number(prev.cantidad);
+      // tenido consumo. Detectamos consumo tanto en cantidad (APU completo) como
+      // en valor (insumos/sub-insumos pagados que solo bajan saldoValor). Si ya
+      // hubo consumo, se preserva para no borrar lo ejecutado al re-importar.
+      const consumido = prev && (
+        Number(prev.saldoCantidad) < Number(prev.cantidad) ||
+        Number(prev.saldoValor) < Number(prev.cantidad) * Number(prev.precioUnitario)
+      );
+      const reiniciarSaldo = !prev || !consumido;
       const saldo = reiniciarSaldo
         ? { saldoCantidad: cantidad, saldoValor: cantidad * precioUnitario }
         : {};

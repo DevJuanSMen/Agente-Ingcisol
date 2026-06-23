@@ -100,6 +100,44 @@ const confirmDelivery = async (companyId, orderId, userId) => {
   return updated;
 };
 
+// Al pagar una OC, descuenta su costo del saldo del presupuesto (ItemAPU).
+// El dinero (saldoValor) siempre se descuenta contra el APU padre de cada ítem.
+// La cantidad (saldoCantidad) solo se descuenta cuando la línea es el APU
+// completo: para insumos o sub-insumos la unidad difiere (ej. kg de cemento vs
+// m³ del APU), así que solo afecta el valor, no la cantidad.
+const consumirSaldoPresupuesto = async (tx, orderId) => {
+  const lineas = await tx.quotationItem.findMany({
+    where: { purchaseOrderId: orderId },
+    select: {
+      precioTotal: true,
+      itemApuId: true,
+      requisitionItem: {
+        select: { cantidad: true, itemApuId: true, itemApuInsumoId: true, basicPriceInsumoId: true },
+      },
+    },
+  });
+
+  for (const l of lineas) {
+    const apuId = l.itemApuId || l.requisitionItem?.itemApuId;
+    if (!apuId) continue; // ítem libre, no toca presupuesto APU
+    const apu = await tx.itemAPU.findUnique({
+      where: { id: apuId },
+      select: { saldoValor: true, saldoCantidad: true },
+    });
+    if (!apu) continue;
+
+    const data = {
+      saldoValor: Math.max(0, Number(apu.saldoValor) - Number(l.precioTotal || 0)),
+    };
+    const ri = l.requisitionItem;
+    const esApuCompleto = ri && !ri.itemApuInsumoId && !ri.basicPriceInsumoId;
+    if (esApuCompleto) {
+      data.saldoCantidad = Math.max(0, Number(apu.saldoCantidad) - Number(ri.cantidad || 0));
+    }
+    await tx.itemAPU.update({ where: { id: apuId }, data });
+  }
+};
+
 const registerPayment = async (companyId, orderId, userId) => {
   const order = await getOrder(companyId, orderId);
   if (order.estado !== 'ENTREGADA') {
@@ -111,6 +149,9 @@ const registerPayment = async (companyId, orderId, userId) => {
       where: { id: orderId },
       data: { estado: 'COMPLETADA', fechaPago: new Date() },
     });
+
+    // Descontar del presupuesto del proyecto (las barras de avance suben aquí)
+    await consumirSaldoPresupuesto(tx, orderId);
 
     // Registrar en historial de precios
     const quotationItems = order.quotation.items.filter(
