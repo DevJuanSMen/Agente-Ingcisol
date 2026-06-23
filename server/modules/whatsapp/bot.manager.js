@@ -51,6 +51,31 @@ class BotManager {
     }
   }
 
+  // Borra TODA la sesión guardada (credenciales). Necesario tras un LOGOUT: las
+  // credenciales quedan inválidas y reusarlas provoca "Target closed" en bucle.
+  // Tras esto, el siguiente initialize() genera un QR nuevo para re-vincular.
+  _clearSession(companyId) {
+    const sessionDir = path.join(AUTH_BASE, `session-${companyId}`);
+    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // Programa un único reintento de reconexión (evita timers duplicados y no
+  // reintenta si la empresa deshabilitó el bot).
+  async _scheduleReconnect(companyId, delayMs = 30_000) {
+    if (this.retryTimers.has(companyId)) return;
+    const enabled = await redis.get(this._keys(companyId).enabled);
+    if (enabled !== '1') {
+      logger.info(`[bot:${companyId}] Bot deshabilitado; no se reconecta`);
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(companyId);
+      logger.info(`[bot:${companyId}] Reintentando reconexión...`);
+      this.initCompany(companyId);
+    }, delayMs);
+    this.retryTimers.set(companyId, timer);
+  }
+
   async initCompany(companyId) {
     if (this.clients.has(companyId)) {
       logger.info(`[bot:${companyId}] Cliente ya activo`);
@@ -91,15 +116,23 @@ class BotManager {
     client.on('disconnected', async (reason) => {
       logger.warn(`[bot:${companyId}] Desconectado: ${reason}`);
       this.ready.delete(companyId);
-      await redis.set(k.status, 'disconnected');
       this.clients.delete(companyId);
+      await redis.set(k.status, 'disconnected');
 
-      const timer = setTimeout(() => {
-        this.retryTimers.delete(companyId);
-        logger.info(`[bot:${companyId}] Reintentando reconexión...`);
-        this.initCompany(companyId);
-      }, 30_000);
-      this.retryTimers.set(companyId, timer);
+      // Cerrar el navegador del cliente caído: si no, queda un proceso zombie y
+      // el reintento choca con "Target closed".
+      try { await client.destroy(); } catch {}
+
+      // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
+      // credenciales ya no sirven: hay que limpiarlas para re-vincular con QR.
+      if (reason === 'LOGOUT') {
+        this._clearSession(companyId);
+        await redis.del(k.qr);
+        await redis.set(k.status, 'qr_waiting');
+        logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Se requiere re-escanear el QR.`);
+      }
+
+      await this._scheduleReconnect(companyId);
     });
 
     client.on('message', async (msg) => {
@@ -166,11 +199,15 @@ class BotManager {
     await redis.set(k.status, 'disconnected');
     this.clients.set(companyId, client);
 
-    client.initialize().catch((err) => {
+    client.initialize().catch(async (err) => {
       logger.error(`[bot:${companyId}] Error al inicializar: ${err.message}`);
       this.ready.delete(companyId);
-      redis.set(k.status, 'error');
       this.clients.delete(companyId);
+      await redis.set(k.status, 'error');
+      // Cerrar lo que haya quedado a medias y reintentar de forma controlada.
+      try { await client.destroy(); } catch {}
+      this._clearLocks(companyId);
+      await this._scheduleReconnect(companyId);
     });
   }
 
