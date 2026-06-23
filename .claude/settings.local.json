@@ -11,7 +11,8 @@
       "Bash(node -e \"require\\('./modules/quotations/quotations.service'\\); console.log\\('OK quotations.service'\\);\")",
       "Bash(node -c worker.js)",
       "Bash(docker exec *)",
-      "Bash(docker restart *)"
+      "Bash(docker restart *)",
+      "Bash(git push *)"
     ]
   }
 }

@@ -3,23 +3,26 @@ import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { useProjectStore } from '../../store/projectStore';
 
+// Cada ruta se mapea a su módulo de permisos (mod). Visible si el rol tiene `ver`.
+// Las que no llevan `mod` son siempre visibles; `directorOnly` solo para director.
 const ALL_ROUTES = [
-  { path: '/', label: 'Dashboard', icon: '📊', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA', 'CONTABILIDAD'] },
-  { path: '/projects', label: 'Proyectos', icon: '🏗️', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA', 'CONTABILIDAD'] },
-  { path: '/delegations', label: 'Delegaciones', icon: '🤝', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'] },
-  { divider: true, label: 'Operaciones', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA', 'CONTABILIDAD'] },
-  { path: '/requisitions', label: 'Requisiciones', icon: '📋', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'] },
-  { path: '/quotations', label: 'Cotizaciones', icon: '💬', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/orders', label: 'Órdenes de Compra', icon: '📦', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'CONTABILIDAD'] },
-  { path: '/tracking', label: 'Seguimiento', icon: '🚦', roles: ['DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA', 'CONTABILIDAD'] },
-  { divider: true, label: 'Configuración', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/import', label: 'Importar Presupuesto', icon: '📂', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/apu', label: 'APU', icon: '📐', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/basic-prices', label: 'Básicos e Insumos', icon: '🧱', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/suppliers', label: 'Proveedores', icon: '🏭', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/company', label: 'Empresa', icon: '🏢', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
-  { path: '/settings/users', label: 'Usuarios', icon: '👥', roles: ['DIRECTOR'] },
-  { path: '/settings/whatsapp', label: 'Bot WhatsApp', icon: '💬', roles: ['DIRECTOR', 'APOYO_DIRECTOR'] },
+  { path: '/', label: 'Dashboard', icon: '📊' },
+  { path: '/projects', label: 'Proyectos', icon: '🏗️', mod: 'projects' },
+  { path: '/delegations', label: 'Delegaciones', icon: '🤝', mod: 'delegations' },
+  { divider: true, label: 'Operaciones' },
+  { path: '/requisitions', label: 'Requisiciones', icon: '📋', mod: 'requisitions' },
+  { path: '/quotations', label: 'Cotizaciones', icon: '💬', mod: 'quotations' },
+  { path: '/orders', label: 'Órdenes de Compra', icon: '📦', mod: 'orders' },
+  { path: '/tracking', label: 'Seguimiento', icon: '🚦', mod: 'tracking' },
+  { divider: true, label: 'Configuración' },
+  { path: '/import', label: 'Importar Presupuesto', icon: '📂', mod: 'budget' },
+  { path: '/apu', label: 'APU', icon: '📐', mod: 'budget' },
+  { path: '/basic-prices', label: 'Básicos e Insumos', icon: '🧱', mod: 'budget' },
+  { path: '/suppliers', label: 'Proveedores', icon: '🏭', mod: 'suppliers' },
+  { path: '/company', label: 'Empresa', icon: '🏢', mod: 'company' },
+  { path: '/settings/users', label: 'Usuarios', icon: '👥', directorOnly: true },
+  { path: '/settings/permissions', label: 'Permisos', icon: '🔐', directorOnly: true },
+  { path: '/settings/whatsapp', label: 'Bot WhatsApp', icon: '💬', mod: 'whatsapp' },
 ];
 
 const ESTADO_COLOR = {
@@ -101,9 +104,23 @@ function ProjectSelector() {
 
 export default function Sidebar({ open, onClose }) {
   const user = useAuthStore((s) => s.user);
+  const permissions = useAuthStore((s) => s.permissions);
   const logout = useAuthStore((s) => s.logout);
 
-  const visibleRoutes = ALL_ROUTES.filter((r) => r.roles?.includes(user?.rol));
+  const isDirector = user?.rol === 'DIRECTOR';
+  const routeVisible = (r) => {
+    if (r.directorOnly) return isDirector;
+    if (r.mod) return isDirector || !!permissions?.[r.mod]?.ver;
+    return true; // sin módulo → siempre visible (Dashboard)
+  };
+
+  // Filtra rutas y descarta divisores cuya sección quedó vacía
+  const filtered = ALL_ROUTES.filter((r) => r.divider || routeVisible(r));
+  const visibleRoutes = filtered.filter((r, idx) => {
+    if (!r.divider) return true;
+    const next = filtered[idx + 1];
+    return next && !next.divider; // hay al menos una ruta visible tras el divisor
+  });
 
   return (
     <>

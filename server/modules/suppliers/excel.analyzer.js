@@ -109,6 +109,79 @@ const analyzeSuppliersExcel = async (buffer) => {
   };
 };
 
+// Devuelve TODAS las filas ya mapeadas para mostrarlas en una grilla editable
+// (sin sesión Redis: el front edita las filas y las reenvía a /import).
+const previewSuppliersExcel = async (buffer) => {
+  const sheet = parseExcel(buffer);
+  if (!sheet) throw Object.assign(new Error('El archivo no contiene datos'), { statusCode: 400 });
+
+  const groq = getGroq();
+  logger.info(`[suppliers.analyzer] previewSuppliersExcel: hoja "${sheet.nombre}" (${sheet.filas.length} filas)`);
+
+  let columnas = {};
+  let razon = '';
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: buildGroqPrompt(sheet) }],
+      temperature: 0.1,
+      max_tokens: 600,
+      response_format: { type: 'json_object' },
+    });
+    const analysis = JSON.parse(completion.choices[0].message.content);
+    columnas = analysis.columnas || {};
+    razon = analysis.razon || '';
+  } catch (err) {
+    // Si la IA falla, intentamos un mapeo heurístico por nombre de columna
+    logger.warn('[suppliers.analyzer] Groq falló, usando mapeo heurístico:', err.message);
+    columnas = heuristicMap(sheet.headers);
+  }
+
+  // Si la IA no detectó la columna del nombre, completar con heurística
+  if (!columnas.nombre) {
+    const fallback = heuristicMap(sheet.headers);
+    columnas = { ...fallback, ...Object.fromEntries(Object.entries(columnas).filter(([, v]) => v)) };
+  }
+
+  const rows = mapRows(sheet.filas, columnas);
+
+  return {
+    hoja: sheet.nombre,
+    totalFilas: rows.length,
+    headers: sheet.headers,
+    columnas,
+    razon,
+    rows,
+  };
+};
+
+// Mapeo heurístico de columnas por nombre (respaldo si la IA falla)
+const heuristicMap = (headers) => {
+  const find = (...patterns) =>
+    headers.find((h) => patterns.some((p) => p.test(String(h).toUpperCase()))) || null;
+  return {
+    nombre:   find(/NOMBRE|RAZ[OÓ]N|PROVEEDOR|EMPRESA/),
+    nit:      find(/NIT|RUT|IDENTIFIC|C[EÉ]DULA|DOCUMENTO/),
+    ciudad:   find(/CIUDAD|MUNICIPIO|UBICAC/),
+    whatsapp: find(/WHATSAPP|CELULAR|M[OÓ]VIL|MOVIL|TEL[EÉ]FONO|CONTACTO/),
+    email:    find(/EMAIL|CORREO|MAIL/),
+    segmento: find(/SEGMENTO|TIPO|CATEGOR[IÍ]A|RUBRO|L[IÍ]NEA/),
+  };
+};
+
+// Aplica el mapeo a todas las filas → registros de proveedor
+const mapRows = (filas, map) =>
+  filas
+    .map((r) => ({
+      nombre:   map.nombre ? String(r[map.nombre] ?? '').trim() : '',
+      nit:      map.nit && r[map.nit] ? String(r[map.nit]).trim() : '',
+      ciudad:   map.ciudad && r[map.ciudad] ? String(r[map.ciudad]).trim() : '',
+      whatsapp: map.whatsapp && r[map.whatsapp] ? String(r[map.whatsapp]).trim() : '',
+      email:    map.email && r[map.email] ? String(r[map.email]).trim() : '',
+      segmento: normalizeSegmento(map.segmento ? r[map.segmento] : null),
+    }))
+    .filter((s) => s.nombre);
+
 const confirmSuppliersImport = async (sessionKey, columnas) => {
   const raw = await redis.get(`suppliers:session:${sessionKey}`);
   if (!raw) throw Object.assign(new Error('Sesión expirada o inválida. Sube el archivo nuevamente.'), { statusCode: 400 });
@@ -131,4 +204,4 @@ const confirmSuppliersImport = async (sessionKey, columnas) => {
     .filter((s) => s.nombre);
 };
 
-module.exports = { analyzeSuppliersExcel, confirmSuppliersImport, normalizeSegmento };
+module.exports = { analyzeSuppliersExcel, confirmSuppliersImport, previewSuppliersExcel, normalizeSegmento };

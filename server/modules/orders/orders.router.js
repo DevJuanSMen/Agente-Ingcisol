@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { verifyToken } = require('../../shared/middleware/auth');
-const { requireRole } = require('../../shared/middleware/rbac');
+const { requireRole, requirePermission } = require('../../shared/middleware/rbac');
 const { ok } = require('../../shared/utils/response');
 const ordersService = require('./orders.service');
 
@@ -41,7 +41,7 @@ router.get('/:id/pdf', async (req, res, next) => {
 
 router.put(
   '/:id/confirm-delivery',
-  requireRole('DIRECTOR', 'APOYO_DIRECTOR', 'RESIDENTE', 'ALMACENISTA'),
+  requirePermission('orders', 'editar'),
   async (req, res, next) => {
     try {
       const order = await ordersService.confirmDelivery(req.user.companyId, req.params.id, req.user.id);
@@ -58,6 +58,20 @@ router.put(
   async (req, res, next) => {
     try {
       const order = await ordersService.registerPayment(req.user.companyId, req.params.id, req.user.id);
+      ok(res, order);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Editar impuestos / transporte de la OC (para discriminación DIAN en el PDF)
+router.put(
+  '/:id/taxes',
+  requirePermission('orders', 'editar'),
+  async (req, res, next) => {
+    try {
+      const order = await ordersService.updateTaxes(req.user.companyId, req.params.id, req.body);
       ok(res, order);
     } catch (err) {
       next(err);

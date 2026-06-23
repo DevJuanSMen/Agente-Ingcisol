@@ -25,6 +25,7 @@ import MasterImport from './pages/Import/MasterImport';
 import SupplierList from './pages/Suppliers/SupplierList';
 import CompanyProfile from './pages/Company/CompanyProfile';
 import UsersSettings from './pages/Settings/UsersSettings';
+import PermissionsSettings from './pages/Settings/PermissionsSettings';
 import WhatsAppBot from './pages/Settings/WhatsAppBot';
 
 function ProtectedRoute({ children }) {
@@ -71,6 +72,7 @@ export default function App() {
           <Route path="suppliers" element={<SupplierList />} />
           <Route path="company" element={<CompanyProfile />} />
           <Route path="settings/users" element={<UsersSettings />} />
+          <Route path="settings/permissions" element={<PermissionsSettings />} />
           <Route path="settings/whatsapp" element={<WhatsAppBot />} />
         </Route>
 

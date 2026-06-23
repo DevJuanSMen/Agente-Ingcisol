@@ -43,15 +43,20 @@ function ApuTab({ items, setItems }) {
             <Fragment key={it.codigo + i}>
               <tr className="border-b border-slate-100 hover:bg-blue-50/30">
                 <td className="px-2 py-1 text-center">
-                  {it.insumos?.length > 0 && (
+                  {it.insumos?.length > 0 ? (
                     <button onClick={() => setExpanded(expanded === i ? null : i)} className="text-slate-400 hover:text-primary">
                       {expanded === i ? '▼' : '▶'}
                     </button>
+                  ) : (
+                    <span className="text-[9px] text-amber-500" title="Sin insumos vinculados">⚠</span>
                   )}
                 </td>
                 <td className="px-1 py-1">
                   <input value={it.codigo} onChange={(e) => update(i, 'codigo', e.target.value)}
                     className="w-full px-1 py-0.5 font-mono bg-transparent border border-transparent focus:border-blue-400 focus:bg-white rounded focus:outline-none" />
+                  {!(it.insumos?.length > 0) && (
+                    <span className="block text-[9px] text-amber-500 leading-none mt-0.5">sin insumos</span>
+                  )}
                 </td>
                 <td className="px-1 py-1">
                   <input value={it.descripcion} onChange={(e) => update(i, 'descripcion', e.target.value)}
@@ -233,11 +238,25 @@ function ImportModal({ data, onClose, onConfirm }) {
           <div>
             <h2 className="text-base font-bold text-slate-800">Revisar e importar presupuesto maestro</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Hojas detectadas: {Object.entries(data.sheetsDetectadas).filter(([, v]) => v).map(([k, v]) => `${v}`).join(' · ')}
+              Hojas detectadas:{' '}
+              {Object.entries(data.sheetsDetectadas)
+                .map(([k, v]) => `${k.toUpperCase()} → ${v || '—'}`)
+                .join('  ·  ')}
             </p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
         </div>
+
+        {data.resumen?.apuSinInsumos > 0 && (
+          <div className="mx-6 mt-3 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <span className="text-base flex-shrink-0">⚠️</span>
+            <p className="text-xs text-amber-800">
+              <strong>{data.resumen.apuSinInsumos}</strong> de {data.resumen.apu} ítems APU no tienen insumos vinculados
+              (marcados con <span className="text-amber-700 font-semibold">sin insumos</span>). Revisa que las hojas se hayan
+              detectado bien; puedes corregir el desglose antes de importar.
+            </p>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-1 px-6 pt-3 border-b border-slate-200">

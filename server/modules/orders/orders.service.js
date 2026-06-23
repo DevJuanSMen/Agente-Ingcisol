@@ -208,6 +208,24 @@ const generateOrderDocument = async (companyId, orderId) => {
   return { buffer, filename: `${order.consecutivo}.pdf` };
 };
 
+// Actualiza el transporte/flete y los overrides tributarios de una OC.
+// Campos en null → se hereda la configuración de la empresa al generar el PDF.
+const updateTaxes = async (companyId, orderId, data) => {
+  await getOrder(companyId, orderId); // valida pertenencia a la empresa
+
+  const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+
+  return prisma.purchaseOrder.update({
+    where: { id: orderId },
+    data: {
+      transporte: data.transporte != null && data.transporte !== '' ? Number(data.transporte) : 0,
+      ivaPorcentaje: numOrNull(data.ivaPorcentaje),
+      retefuentePorcentaje: numOrNull(data.retefuentePorcentaje),
+      reteIcaPorMil: numOrNull(data.reteIcaPorMil),
+    },
+  });
+};
+
 const cancelOrder = async (companyId, orderId, userId) => {
   const order = await getOrder(companyId, orderId);
   if (order.estado === 'ENTREGADA') {
@@ -226,5 +244,6 @@ module.exports = {
   confirmDelivery,
   registerPayment,
   cancelOrder,
+  updateTaxes,
   generateOrderDocument,
 };

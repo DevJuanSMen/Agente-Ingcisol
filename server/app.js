@@ -21,6 +21,7 @@ const basicPricesRouter = require('./modules/basicprices/basicprices.router');
 const whatsappRouter = require('./modules/whatsapp/whatsapp.router');
 const assistantRouter = require('./modules/assistant/assistant.router');
 const masterImportRouter = require('./modules/masterimport/masterimport.router');
+const permissionsRouter = require('./modules/permissions/permissions.router');
 
 const app = express();
 
@@ -59,6 +60,7 @@ app.use('/api/basic-prices', basicPricesRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/assistant', assistantRouter);
 app.use('/api/master-import', masterImportRouter);
+app.use('/api/permissions', permissionsRouter);
 
 // Handler de errores global
 app.use((err, req, res, next) => {

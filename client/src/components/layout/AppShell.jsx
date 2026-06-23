@@ -3,13 +3,16 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
 import { useProjectStore } from '../../store/projectStore';
+import { useAuthStore } from '../../store/authStore';
 
 export default function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const loadProjects = useProjectStore((s) => s.loadProjects);
+  const loadPermissions = useAuthStore((s) => s.loadPermissions);
 
   useEffect(() => {
     loadProjects();
+    loadPermissions();
   }, []);
 
   return (

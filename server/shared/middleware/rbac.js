@@ -24,4 +24,20 @@ const requireTope = (getAmount) => (req, res, next) => {
   next();
 };
 
-module.exports = { requireRole, requireTope };
+// Verifica el permiso configurable (matriz por empresa) para un módulo + acción.
+// El director siempre pasa. La comprobación se hace contra la matriz cacheada.
+const requirePermission = (modulo, accion = 'ver') => async (req, res, next) => {
+  try {
+    // Carga diferida para evitar dependencia circular con el servicio
+    const { can } = require('../../modules/permissions/permissions.service');
+    const allowed = await can(req.user.companyId, req.user.rol, modulo, accion);
+    if (!allowed) {
+      return forbidden(res, `No tienes permiso para ${accion} en ${modulo}`);
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { requireRole, requireTope, requirePermission };

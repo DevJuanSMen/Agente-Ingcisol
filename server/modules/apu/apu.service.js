@@ -9,7 +9,6 @@ const getAPUTree = async (companyId) => {
   const items = await prisma.itemAPU.findMany({
     where: { projectId: activeProject.id },
     include: { insumos: { orderBy: { createdAt: 'asc' } } },
-    orderBy: { codigo: 'asc' },
   });
 
   // Usar capitulo guardado, o inferir del primer segmento del código
@@ -20,7 +19,36 @@ const getAPUTree = async (companyId) => {
     tree[chapter].items.push(item);
   }
 
-  return { project: activeProject, tree: Object.values(tree) };
+  // Orden natural (numérico) de códigos: "1.2" < "1.10" < "2.1"
+  const natKey = (s) => String(s || '').split(/[.\-/\s]+/).map((p) => {
+    const n = parseInt(p, 10);
+    return Number.isNaN(n) ? p : n;
+  });
+  const cmpNat = (a, b) => {
+    const ka = natKey(a), kb = natKey(b);
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const x = ka[i], y = kb[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      if (typeof x === 'number' && typeof y === 'number') { if (x !== y) return x - y; }
+      else { const s = String(x).localeCompare(String(y)); if (s !== 0) return s; }
+    }
+    return 0;
+  };
+  // Número de capítulo a partir de su etiqueta ("1. PRELIMINARES" → 1)
+  const chapterNum = (label) => {
+    const m = String(label || '').match(/\d+/);
+    return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER;
+  };
+
+  // Ordenar ítems dentro de cada capítulo y capítulos del 1 al final
+  const ordered = Object.values(tree).sort((a, b) => {
+    const d = chapterNum(a.capitulo) - chapterNum(b.capitulo);
+    return d !== 0 ? d : String(a.capitulo).localeCompare(String(b.capitulo));
+  });
+  for (const ch of ordered) ch.items.sort((a, b) => cmpNat(a.codigo, b.codigo));
+
+  return { project: activeProject, tree: ordered };
 };
 
 const getItem = async (companyId, itemId) => {

@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { verifyToken } = require('../../shared/middleware/auth');
-const { requireRole } = require('../../shared/middleware/rbac');
+const { requireRole, requirePermission } = require('../../shared/middleware/rbac');
 const { ok, created } = require('../../shared/utils/response');
 const requisitionsService = require('./requisitions.service');
 
@@ -37,7 +37,7 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', requirePermission('requisitions', 'crear'), async (req, res, next) => {
   try {
     const requisition = await requisitionsService.createRequisition(
       req.user.companyId,
@@ -94,7 +94,7 @@ router.put('/:id/extend', async (req, res, next) => {
 });
 
 // Eliminar requisición (no permitido si tiene OC emitida)
-router.delete('/:id', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.delete('/:id', requirePermission('requisitions', 'eliminar'), async (req, res, next) => {
   try {
     const result = await requisitionsService.deleteRequisition(
       req.user.companyId,

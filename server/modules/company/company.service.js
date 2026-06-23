@@ -10,12 +10,17 @@ const updateCompany = async (companyId, data) => {
   const {
     razonSocial, nit, representanteLegal, emailCorporativo,
     telefono, direccion, ciudad, banco, tipoCuenta, numeroCuenta,
+    ivaPorcentaje, retefuentePorcentaje, reteIcaPorMil,
   } = data;
+  const numOr = (v, def) => (v === '' || v === null || v === undefined ? def : Number(v));
   return prisma.company.update({
     where: { id: companyId },
     data: {
       razonSocial, nit, representanteLegal, emailCorporativo,
       telefono, direccion, ciudad, banco, tipoCuenta, numeroCuenta,
+      ivaPorcentaje: numOr(ivaPorcentaje, 19),
+      retefuentePorcentaje: numOr(retefuentePorcentaje, 0),
+      reteIcaPorMil: numOr(reteIcaPorMil, 0),
     },
   });
 };

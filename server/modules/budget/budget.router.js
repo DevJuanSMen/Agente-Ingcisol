@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { verifyToken } = require('../../shared/middleware/auth');
-const { requireRole } = require('../../shared/middleware/rbac');
+const { requirePermission } = require('../../shared/middleware/rbac');
 const { ok, created } = require('../../shared/utils/response');
 const budgetService = require('./budget.service');
 
@@ -20,7 +20,7 @@ router.get('/:projectId/sheets/:sheetId', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/:projectId/sheets', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:projectId/sheets', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { sheets } = req.body;
     if (!Array.isArray(sheets) || sheets.length === 0) {
@@ -31,14 +31,14 @@ router.post('/:projectId/sheets', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), asy
   } catch (err) { next(err); }
 });
 
-router.delete('/:projectId/sheets/:sheetId', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.delete('/:projectId/sheets/:sheetId', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     await budgetService.deleteSheet(req.user.companyId, req.params.projectId, req.params.sheetId);
     ok(res, { message: 'Hoja eliminada' });
   } catch (err) { next(err); }
 });
 
-router.post('/:projectId/sheets/:sheetId/import-apu', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:projectId/sheets/:sheetId/import-apu', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { colMap } = req.body;
     if (!colMap) return res.status(400).json({ error: true, message: 'Se requiere colMap' });
@@ -49,7 +49,7 @@ router.post('/:projectId/sheets/:sheetId/import-apu', requireRole('DIRECTOR', 'A
   } catch (err) { next(err); }
 });
 
-router.post('/:projectId/sheets/:sheetId/import-basics', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:projectId/sheets/:sheetId/import-basics', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { colMap } = req.body;
     if (!colMap) return res.status(400).json({ error: true, message: 'Se requiere colMap' });

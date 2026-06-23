@@ -13,6 +13,7 @@ export default function CompanyProfile() {
   const [form, setForm] = useState({
     razonSocial: '', nit: '', representanteLegal: '', emailCorporativo: '',
     telefono: '', direccion: '', ciudad: '', banco: '', tipoCuenta: '', numeroCuenta: '',
+    ivaPorcentaje: '19', retefuentePorcentaje: '0', reteIcaPorMil: '0',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -40,6 +41,9 @@ export default function CompanyProfile() {
           banco: d.banco || '',
           tipoCuenta: d.tipoCuenta || '',
           numeroCuenta: d.numeroCuenta || '',
+          ivaPorcentaje: d.ivaPorcentaje != null ? String(d.ivaPorcentaje) : '19',
+          retefuentePorcentaje: d.retefuentePorcentaje != null ? String(d.retefuentePorcentaje) : '0',
+          reteIcaPorMil: d.reteIcaPorMil != null ? String(d.reteIcaPorMil) : '0',
         });
       })
       .finally(() => setLoading(false));
@@ -231,6 +235,48 @@ export default function CompanyProfile() {
                   onChange={(e) => setForm({ ...form, numeroCuenta: e.target.value })}
                   disabled={!isDirector}
                   placeholder="000-000000-00"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-100">
+            <p className="text-sm font-semibold text-slate-700 mb-1">Impuestos / DIAN</p>
+            <p className="text-xs text-slate-400 mb-3">
+              Valores por defecto que se discriminan en las órdenes de compra (puedes ajustarlos por OC).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">IVA (%)</label>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={form.ivaPorcentaje}
+                  onChange={(e) => setForm({ ...form, ivaPorcentaje: e.target.value })}
+                  disabled={!isDirector}
+                  placeholder="19"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Retefuente (%)</label>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={form.retefuentePorcentaje}
+                  onChange={(e) => setForm({ ...form, retefuentePorcentaje: e.target.value })}
+                  disabled={!isDirector}
+                  placeholder="0"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">ReteICA (×1000)</label>
+                <input
+                  type="number" step="0.001" min="0"
+                  value={form.reteIcaPorMil}
+                  onChange={(e) => setForm({ ...form, reteIcaPorMil: e.target.value })}
+                  disabled={!isDirector}
+                  placeholder="0"
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
                 />
               </div>

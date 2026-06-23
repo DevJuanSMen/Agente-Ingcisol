@@ -69,4 +69,77 @@ const getTrackingBoard = async (companyId) => {
   });
 };
 
-module.exports = { getTrackingBoard, getSemaforo };
+// ── Seguimiento general: requisiciones activas + sus órdenes de compra ─────────
+// Lista todas las requisiciones no cerradas/canceladas con su estado en el flujo,
+// el estado de su cotización y las OC asociadas (con semáforo de entrega).
+const getRequisitionsTracking = async (companyId) => {
+  const projects = await prisma.project.findMany({ where: { companyId }, select: { id: true } });
+  const projectIds = projects.map((p) => p.id);
+
+  const requisitions = await prisma.requisition.findMany({
+    where: {
+      projectId: { in: projectIds },
+      estado: { notIn: ['CERRADA', 'EXPIRADA', 'RECHAZADA'] },
+    },
+    include: {
+      project: { select: { nombre: true } },
+      solicitante: { select: { nombre: true } },
+      _count: { select: { items: true } },
+      quotation: {
+        select: {
+          estado: true,
+          purchaseOrders: {
+            select: {
+              id: true,
+              consecutivo: true,
+              estado: true,
+              montoTotal: true,
+              fechaEntregaPactada: true,
+              proveedor: { select: { nombre: true } },
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+
+  return requisitions.map((req) => {
+    const ordenes = (req.quotation?.purchaseOrders || []).map((po) => {
+      const semaforo = ['EMITIDA', 'ENVIADA'].includes(po.estado) ? getSemaforo(po.fechaEntregaPactada) : null;
+      const diasRestantes = po.fechaEntregaPactada
+        ? Math.ceil((new Date(po.fechaEntregaPactada) - hoy) / 86400000)
+        : null;
+      return {
+        id: po.id,
+        consecutivo: po.consecutivo,
+        estado: po.estado,
+        montoTotal: po.montoTotal,
+        fechaEntregaPactada: po.fechaEntregaPactada,
+        proveedor: po.proveedor?.nombre || '—',
+        semaforo,
+        diasRestantes,
+      };
+    });
+
+    return {
+      id: req.id,
+      consecutivo: req.consecutivo,
+      estado: req.estado,
+      prioridad: req.prioridad,
+      canal: req.canal,
+      fechaLimite: req.fechaLimite,
+      createdAt: req.createdAt,
+      proyecto: req.project?.nombre || '—',
+      solicitante: req.solicitante?.nombre || '—',
+      totalItems: req._count.items,
+      cotizacionEstado: req.quotation?.estado || null,
+      ordenes,
+    };
+  });
+};
+
+module.exports = { getTrackingBoard, getRequisitionsTracking, getSemaforo };

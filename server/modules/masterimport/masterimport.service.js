@@ -22,32 +22,56 @@ const confirmImport = async (companyId, payload) => {
   }
   const apuDeduped = [...apuSeen.values()];
 
+  // Ítems ya existentes del proyecto (para actualizar en vez de borrar+recrear).
+  // Borrar y recrear rompía con llaves foráneas (requisiciones, historial de
+  // precios) y generaba conflictos. Ahora se hace UPSERT por código: lo que ya
+  // existe se actualiza, lo nuevo se crea, y nada se duplica.
+  const existing = await prisma.itemAPU.findMany({
+    where: { projectId: activeProject.id },
+    select: { id: true, codigo: true, cantidad: true, saldoCantidad: true },
+  });
+  const existingByCode = new Map(existing.map((e) => [e.codigo, e]));
+
   let apuCount = 0;
   await prisma.$transaction(async (tx) => {
-    // Borra ítems anteriores del proyecto (insumos caen en cascada)
-    await tx.itemAPU.deleteMany({ where: { projectId: activeProject.id } });
-
     for (const it of apuDeduped) {
+      const codigo         = String(it.codigo).trim().toUpperCase();
       const cantidad       = parseFloat(it.cantidad) || 0;
       const precioUnitario = parseFloat(it.precioUnitario) || 0;
-      const created = await tx.itemAPU.create({
-        data: {
-          projectId:     activeProject.id,
-          codigo:        String(it.codigo).trim().toUpperCase(),
-          descripcion:   String(it.descripcion).trim(),
-          unidad:        String(it.unidad || 'UND').trim() || 'UND',
-          capitulo:      it.capitulo ? String(it.capitulo).trim() : null,
-          cantidad,
-          precioUnitario,
-          saldoCantidad: cantidad,
-          saldoValor:    cantidad * precioUnitario,
-        },
-      });
+      const base = {
+        descripcion: String(it.descripcion).trim(),
+        unidad:      String(it.unidad || 'UND').trim() || 'UND',
+        capitulo:    it.capitulo ? String(it.capitulo).trim() : null,
+        cantidad,
+        precioUnitario,
+      };
+
+      const prev = existingByCode.get(codigo);
+      // El saldo se reinicia a la nueva cantidad solo si el ítem es nuevo o no ha
+      // tenido consumo (saldo == cantidad). Si ya hubo consumo, se preserva.
+      const reiniciarSaldo = !prev || Number(prev.saldoCantidad) === Number(prev.cantidad);
+      const saldo = reiniciarSaldo
+        ? { saldoCantidad: cantidad, saldoValor: cantidad * precioUnitario }
+        : {};
+
+      let itemId;
+      if (prev) {
+        await tx.itemAPU.update({ where: { id: prev.id }, data: { ...base, ...saldo } });
+        // Reemplazar insumos (RequisitionItem.itemApuInsumoId queda en null por SetNull)
+        await tx.itemAPUInsumo.deleteMany({ where: { itemApuId: prev.id } });
+        itemId = prev.id;
+      } else {
+        const created = await tx.itemAPU.create({
+          data: { projectId: activeProject.id, codigo, ...base, saldoCantidad: cantidad, saldoValor: cantidad * precioUnitario },
+        });
+        itemId = created.id;
+      }
+
       const ins = Array.isArray(it.insumos) ? it.insumos : [];
       if (ins.length > 0) {
         await tx.itemAPUInsumo.createMany({
           data: ins.map((x) => ({
-            itemApuId:      created.id,
+            itemApuId:      itemId,
             tipo:           String(x.tipo || 'MATERIAL').toUpperCase(),
             descripcion:    String(x.descripcion || '').trim(),
             unidad:         String(x.unidad || 'UND').trim() || 'UND',
@@ -59,7 +83,7 @@ const confirmImport = async (companyId, payload) => {
       }
       apuCount += 1;
     }
-  }, { timeout: 30000 });
+  }, { timeout: 60000 });
 
   // ── 2. BasicPrice: compuestos (BASICO-N) + simples (INS-NNN) ────────────────
   const allBasics = new Map();

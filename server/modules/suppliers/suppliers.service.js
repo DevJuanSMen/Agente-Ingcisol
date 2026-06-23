@@ -66,22 +66,25 @@ const updateSupplier = async (companyId, supplierId, data) => {
   });
 };
 
+const SEGMENTOS_VALIDOS = ['MATERIALES', 'EQUIPOS', 'HERRAMIENTAS', 'SERVICIOS'];
+
 const importSuppliers = async (companyId, suppliers, projectId = null) => {
-  const created = await prisma.supplier.createMany({
-    data: suppliers.map((s) => ({
+  const data = suppliers
+    .map((s) => ({
       companyId,
       projectId,
-      nombre: String(s.nombre || s.name || ''),
-      nit: s.nit ? String(s.nit) : null,
+      nombre: String(s.nombre || s.name || '').trim(),
+      nit: s.nit ? String(s.nit).trim() : null,
       ciudad: s.ciudad || s.city || null,
-      segmento: s.segmento || 'MATERIALES',
+      segmento: SEGMENTOS_VALIDOS.includes(s.segmento) ? s.segmento : 'MATERIALES',
       whatsapp: s.whatsapp || s.celular || null,
       email: s.email || s.correo || null,
       homologado: false,
       origen: 'LOCAL',
-    })),
-    skipDuplicates: true,
-  });
+    }))
+    .filter((s) => s.nombre);
+
+  const created = await prisma.supplier.createMany({ data, skipDuplicates: true });
   return created.count;
 };
 

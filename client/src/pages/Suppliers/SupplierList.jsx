@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import api from '../../api/client';
-import { useAuthStore } from '../../store/authStore';
+import { useCan } from '../../store/authStore';
 import { useProjectStore } from '../../store/projectStore';
 import Table from '../../components/ui/Table';
 import Badge from '../../components/ui/Badge';
@@ -11,116 +11,101 @@ const SEGMENTOS = ['MATERIALES', 'EQUIPOS', 'HERRAMIENTAS', 'SERVICIOS'];
 
 const emptyForm = { nombre: '', nit: '', ciudad: '', segmento: 'MATERIALES', whatsapp: '', email: '' };
 
-const IMPORT_FIELDS = [
-  { key: 'nombre', label: 'Nombre', required: true },
-  { key: 'nit', label: 'NIT', required: false },
-  { key: 'ciudad', label: 'Ciudad', required: false },
-  { key: 'whatsapp', label: 'WhatsApp', required: false },
-  { key: 'email', label: 'Email', required: false },
-  { key: 'segmento', label: 'Segmento', required: false },
-];
-
-// Modal de confirmación del mapeo detectado por IA
-function ImportPreviewModal({ analysis, activeProject, onClose, onConfirm }) {
-  const [colMap, setColMap] = useState(() => {
-    const initial = {};
-    IMPORT_FIELDS.forEach((f) => { initial[f.key] = analysis.columnas?.[f.key] || ''; });
-    return initial;
-  });
+// Ventana editable con TODAS las filas del Excel (estilo importación de presupuesto).
+// El director ve la tabla completa, ajusta lo que necesite y la importa tal cual.
+function SupplierImportModal({ analysis, activeProject, onClose, onConfirm }) {
+  const [rows, setRows] = useState(() => analysis.rows || []);
   const [linkProject, setLinkProject] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const isValid = Boolean(colMap.nombre);
+  const update = (i, field, value) =>
+    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
+  const remove = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i));
+
+  const validRows = rows.filter((r) => String(r.nombre || '').trim());
 
   const handleConfirm = async () => {
     setLoading(true);
     try {
-      await onConfirm(colMap, linkProject ? activeProject?.id : null);
+      await onConfirm(validRows, linkProject ? activeProject?.id : null);
     } finally {
       setLoading(false);
     }
   };
 
+  const cell = 'w-full px-1.5 py-1 bg-transparent border border-transparent focus:border-primary focus:bg-white rounded focus:outline-none';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between p-5 border-b border-slate-200">
-          <h2 className="text-base font-semibold text-slate-800">🤖 Importar proveedores</h2>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 overflow-auto py-6 px-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+          <div>
+            <h2 className="text-base font-bold text-slate-800">Revisar e importar proveedores</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Hoja <strong>{analysis.hoja}</strong> · {rows.length} filas detectadas — edita lo que necesites antes de importar
+            </p>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
         </div>
-        <div className="overflow-y-auto flex-1 p-5 space-y-4">
-          <p className="text-xs text-slate-500">
-            Hoja: <strong>{analysis.hoja}</strong> — {analysis.totalFilas} filas detectadas
-          </p>
 
-          {analysis.razon && (
-            <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <span className="text-base flex-shrink-0">🤖</span>
-              <p className="text-xs text-blue-800">{analysis.razon}</p>
-            </div>
-          )}
-
-          {/* Mapeo de columnas (editable) */}
-          <div className="space-y-2.5">
-            <p className="text-xs font-medium text-slate-600">
-              Mapeo detectado por IA — verifica y ajusta si es necesario
-            </p>
-            {IMPORT_FIELDS.map((f) => (
-              <div key={f.key} className="flex items-center gap-3">
-                <label className="text-xs font-medium text-slate-700 w-28 flex-shrink-0">
-                  {f.label}
-                  {f.required && <span className="text-red-500 ml-0.5">*</span>}
-                </label>
-                <select
-                  value={colMap[f.key]}
-                  onChange={(e) => setColMap((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                >
-                  <option value="">— Sin mapear —</option>
-                  {analysis.headers.map((h) => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-            ))}
+        {analysis.razon && (
+          <div className="mx-6 mt-4 flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <span className="text-base flex-shrink-0">🤖</span>
+            <p className="text-xs text-blue-800">{analysis.razon}</p>
           </div>
+        )}
 
-          {/* Vista previa con el mapeo aplicado */}
-          <div>
-            <p className="text-xs font-medium text-slate-600 mb-1.5">Vista previa</p>
-            <div className="overflow-x-auto border border-slate-200 rounded-lg">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50">
-                  <tr>
-                    {IMPORT_FIELDS.map((f) => (
-                      <th key={f.key} className="px-2 py-1.5 text-left text-slate-600 font-medium whitespace-nowrap">
-                        {f.label}
-                      </th>
-                    ))}
+        <div className="px-4 py-3">
+          <div className="overflow-auto max-h-[52vh] border border-slate-200 rounded-lg">
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-ink-800 text-white">
+                  <th className="px-2 py-2 text-left">Nombre</th>
+                  <th className="px-2 py-2 text-left w-32">NIT</th>
+                  <th className="px-2 py-2 text-left w-32">Ciudad</th>
+                  <th className="px-2 py-2 text-left w-36">WhatsApp</th>
+                  <th className="px-2 py-2 text-left w-44">Email</th>
+                  <th className="px-2 py-2 text-left w-36">Segmento</th>
+                  <th className="px-2 py-2 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30">
+                    <td className="px-1 py-1">
+                      <input value={r.nombre || ''} onChange={(e) => update(i, 'nombre', e.target.value)} className={cell} />
+                    </td>
+                    <td className="px-1 py-1">
+                      <input value={r.nit || ''} onChange={(e) => update(i, 'nit', e.target.value)} className={cell} />
+                    </td>
+                    <td className="px-1 py-1">
+                      <input value={r.ciudad || ''} onChange={(e) => update(i, 'ciudad', e.target.value)} className={cell} />
+                    </td>
+                    <td className="px-1 py-1">
+                      <input value={r.whatsapp || ''} onChange={(e) => update(i, 'whatsapp', e.target.value)} className={cell} />
+                    </td>
+                    <td className="px-1 py-1">
+                      <input value={r.email || ''} onChange={(e) => update(i, 'email', e.target.value)} className={cell} />
+                    </td>
+                    <td className="px-1 py-1">
+                      <select value={r.segmento || 'MATERIALES'} onChange={(e) => update(i, 'segmento', e.target.value)}
+                        className="w-full px-1.5 py-1 bg-transparent border border-transparent focus:border-primary focus:bg-white rounded focus:outline-none">
+                        {SEGMENTOS.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-1 py-1 text-center">
+                      <button onClick={() => remove(i)} className="text-slate-300 hover:text-red-400">×</button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {analysis.preview.map((row, i) => (
-                    <tr key={i}>
-                      {IMPORT_FIELDS.map((f) => (
-                        <td key={f.key} className="px-2 py-1.5 text-slate-700 whitespace-nowrap max-w-[140px] truncate">
-                          {colMap[f.key] ? String(row[colMap[f.key]] ?? '') : '—'}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
 
-          {/* Asociar al proyecto activo */}
           {activeProject && (
-            <label className="flex items-center gap-2.5 p-3 bg-slate-50 rounded-lg cursor-pointer">
-              <input
-                type="checkbox"
-                checked={linkProject}
-                onChange={(e) => setLinkProject(e.target.checked)}
-                className="w-4 h-4 accent-[#1B6FF5]"
-              />
+            <label className="flex items-center gap-2.5 mt-3 p-3 bg-slate-50 rounded-lg cursor-pointer">
+              <input type="checkbox" checked={linkProject} onChange={(e) => setLinkProject(e.target.checked)}
+                className="w-4 h-4 accent-primary" />
               <span className="text-xs text-slate-700">
                 Asociar al proyecto activo: <strong>{activeProject.nombre}</strong>
                 <span className="block text-slate-400 mt-0.5">
@@ -130,11 +115,15 @@ function ImportPreviewModal({ analysis, activeProject, onClose, onConfirm }) {
             </label>
           )}
         </div>
-        <div className="flex items-center gap-3 p-5 border-t border-slate-200">
-          <Button onClick={handleConfirm} loading={loading} disabled={!isValid}>
-            Importar {analysis.totalFilas} proveedores
-          </Button>
-          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
+          <span className="text-sm text-slate-600"><strong>{validRows.length}</strong> proveedores a importar</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+            <Button onClick={handleConfirm} loading={loading} disabled={validRows.length === 0}>
+              Importar {validRows.length} proveedores
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -142,9 +131,10 @@ function ImportPreviewModal({ analysis, activeProject, onClose, onConfirm }) {
 }
 
 export default function SupplierList() {
-  const user = useAuthStore((s) => s.user);
   const activeProject = useProjectStore((s) => s.activeProject);
-  const canEdit = ['DIRECTOR', 'APOYO_DIRECTOR'].includes(user?.rol);
+  const canCreate = useCan('suppliers', 'crear');
+  const canDelete = useCan('suppliers', 'eliminar');
+  const canEdit = canCreate; // mismos botones de alta/importación
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -213,14 +203,10 @@ export default function SupplierList() {
     }
   };
 
-  // Paso 2: confirmar el mapeo e importar
-  const handleConfirmImport = async (columnas, projectId) => {
+  // Paso 2: importar las filas (editadas) tal cual las dejó el director
+  const handleConfirmImport = async (suppliers, projectId) => {
     try {
-      const r = await api.post('/suppliers/confirm', {
-        sessionKey: analysis.sessionKey,
-        columnas,
-        projectId,
-      });
+      const r = await api.post('/suppliers/import', { suppliers, projectId });
       setAnalysis(null);
       load();
       alert(`✅ ${r.data.data.message}`);
@@ -246,7 +232,7 @@ export default function SupplierList() {
     )},
     { key: 'email', label: 'Email' },
     { key: 'whatsapp', label: 'WhatsApp' },
-    ...(canEdit ? [{
+    ...(canDelete ? [{
       key: 'acciones',
       label: '',
       render: (r) => deleteId === r.id ? (
@@ -327,7 +313,7 @@ export default function SupplierList() {
       </Card>
 
       {analysis && (
-        <ImportPreviewModal
+        <SupplierImportModal
           analysis={analysis}
           activeProject={activeProject}
           onClose={() => setAnalysis(null)}

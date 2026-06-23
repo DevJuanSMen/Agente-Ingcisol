@@ -295,30 +295,73 @@ const drawItemsTable = (doc, items, { showSupplier = false } = {}) => {
   return total;
 };
 
-// Caja de total destacada (alineada a la derecha).
-const drawTotalsBox = (doc, total) => {
+// Calcula la discriminación tributaria (DIAN) a partir del subtotal de ítems.
+// Toma el override de la OC y, si falta, la configuración de la empresa.
+const computeTaxes = (subtotal, company = {}, order = {}) => {
+  const pick = (a, b, def) => (a != null ? Number(a) : b != null ? Number(b) : def);
+  const ivaPct = pick(order.ivaPorcentaje, company.ivaPorcentaje, 19);
+  const retefuentePct = pick(order.retefuentePorcentaje, company.retefuentePorcentaje, 0);
+  const reteIcaPorMil = pick(order.reteIcaPorMil, company.reteIcaPorMil, 0);
+  const transporte = Number(order.transporte || 0);
+
+  const iva = (subtotal * ivaPct) / 100;
+  const retefuente = (subtotal * retefuentePct) / 100;
+  const reteIca = (subtotal * reteIcaPorMil) / 1000;
+  const total = subtotal + iva + transporte - retefuente - reteIca;
+
+  return { subtotal, ivaPct, iva, transporte, retefuentePct, retefuente, reteIcaPorMil, reteIca, total };
+};
+
+// Bloque de discriminación de impuestos (estilo factura DIAN) alineado a la derecha.
+const drawTaxBreakdown = (doc, t) => {
   const w = 250;
-  const h = 50;
   const x = RIGHT - w;
-  const y = doc.y;
+  let y = doc.y;
+
+  const line = (label, value, opts = {}) => {
+    doc
+      .fillColor(opts.muted ? COLORS.muted : COLORS.text)
+      .font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+      .fontSize(8.5)
+      .text(label, x, y, { width: w * 0.55 });
+    doc
+      .fillColor(opts.neg ? COLORS.primaryDark : COLORS.ink2)
+      .font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+      .fontSize(8.5)
+      .text((opts.neg ? '−' : '') + fmtCOP(value), x + w * 0.55, y, { width: w * 0.45, align: 'right' });
+    y += 14;
+  };
+
+  line('Subtotal', t.subtotal);
+  line(`IVA (${Number(t.ivaPct).toLocaleString('es-CO')}%)`, t.iva);
+  if (t.transporte > 0) line('Transporte / Flete', t.transporte);
+  if (t.retefuente > 0) line(`Retefuente (${Number(t.retefuentePct).toLocaleString('es-CO')}%)`, t.retefuente, { neg: true });
+  if (t.reteIca > 0) line(`ReteICA (${Number(t.reteIcaPorMil).toLocaleString('es-CO')}×1000)`, t.reteIca, { neg: true });
+
+  // Caja del total a pagar
+  y += 2;
+  const h = 46;
   doc.roundedRect(x, y, w, h, 8).fill(COLORS.ink);
   doc.roundedRect(x, y, 5, h, 2.5).fill(COLORS.primary);
   doc
     .fillColor('#9097A1')
     .font('Helvetica-Bold')
     .fontSize(8)
-    .text('TOTAL ORDEN DE COMPRA', x + 16, y + 11, { characterSpacing: 0.8 });
+    .text('TOTAL A PAGAR', x + 16, y + 9, { characterSpacing: 0.8 });
   doc
     .fillColor(COLORS.white)
     .font('Helvetica-Bold')
-    .fontSize(18)
-    .text(fmtCOP(total), x + 16, y + 23, { width: w - 28 });
+    .fontSize(17)
+    .text(fmtCOP(t.total), x + 16, y + 21, { width: w - 28 });
   doc.y = y + h + 6;
   doc
     .fillColor(COLORS.soft)
     .font('Helvetica-Oblique')
     .fontSize(7)
-    .text('Valores expresados en pesos colombianos (COP).', x, doc.y, { width: w, align: 'right' });
+    .text('Valores en pesos colombianos (COP). Impuestos discriminados conforme a normativa DIAN.', x - 30, doc.y, {
+      width: w + 30,
+      align: 'right',
+    });
 };
 
 // Datos de pago (izquierda) + observaciones, a la altura de la caja de total.
@@ -437,9 +480,10 @@ const generateOrderPdf = ({ company, order, supplier, items, project, requisitio
       }
     );
 
-    const total = drawItemsTable(doc, items, { showSupplier: false });
+    const subtotal = drawItemsTable(doc, items, { showSupplier: false });
+    const taxes = computeTaxes(subtotal, company, order);
     const bandY = doc.y;
-    drawTotalsBox(doc, total);
+    drawTaxBreakdown(doc, taxes);
     drawPaymentInfo(doc, company, bandY);
     drawSignatures(doc, company, supplier?.nombre);
   });
@@ -490,8 +534,10 @@ const generateConsolidatedPdf = ({ company, requisition, project, groups }) =>
     });
 
     doc.y += 6;
+    const transporte = groups.reduce((a, g) => a + Number(g.order?.transporte || 0), 0);
+    const taxes = computeTaxes(total, company, { transporte });
     const bandY = doc.y;
-    drawTotalsBox(doc, total);
+    drawTaxBreakdown(doc, taxes);
     drawPaymentInfo(doc, company, bandY);
     drawSignatures(doc, company, null);
   });
@@ -528,6 +574,7 @@ const normalizeAwardedItems = (adjItems, reqItems) =>
 module.exports = {
   generateOrderPdf,
   generateConsolidatedPdf,
+  computeTaxes,
   fmtCOP,
   dataUrlToBuffer,
   itemMatches,

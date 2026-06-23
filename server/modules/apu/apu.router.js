@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const multer = require('multer');
 const { verifyToken } = require('../../shared/middleware/auth');
-const { requireRole } = require('../../shared/middleware/rbac');
+const { requirePermission } = require('../../shared/middleware/rbac');
 const { ok } = require('../../shared/utils/response');
 const { logger } = require('../../shared/utils/logger');
 const apuService = require('./apu.service');
@@ -30,7 +30,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // Crear ítem APU manual (no borra los existentes)
-router.post('/', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const item = await apuService.createItem(req.user.companyId, req.body);
     ok(res, item);
@@ -38,7 +38,7 @@ router.post('/', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, nex
 });
 
 // Import manual (legacy)
-router.post('/import', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/import', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -50,7 +50,7 @@ router.post('/import', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, re
 });
 
 // Importación multi-tipo desde PDF (APU + BASICOS, no PRESUPUESTO sin proyecto)
-router.post('/import-multi', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/import-multi', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -76,7 +76,7 @@ router.post('/import-multi', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (r
 // Preview Excel — Groq mapea columnas y devuelve TODAS las filas ya mapeadas para grilla de selección
 router.post(
   '/preview-excel',
-  requireRole('DIRECTOR', 'APOYO_DIRECTOR'),
+  requirePermission('budget', 'editar'),
   upload.single('file'),
   async (req, res, next) => {
     try {
@@ -90,7 +90,7 @@ router.post(
 // Análisis IA legacy — sube Excel, Groq mapea columnas, devuelve preview + sessionKey
 router.post(
   '/analyze',
-  requireRole('DIRECTOR', 'APOYO_DIRECTOR'),
+  requirePermission('budget', 'editar'),
   upload.single('file'),
   async (req, res, next) => {
     try {
@@ -102,7 +102,7 @@ router.post(
 );
 
 // Confirmar importación — aplica mapeos y guarda en tablas respectivas
-router.post('/confirm', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/confirm', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { sessionKey, confirmedSheets } = req.body;
     if (!sessionKey || !Array.isArray(confirmedSheets)) {
@@ -171,7 +171,7 @@ router.post('/confirm', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, r
 // Parsear PDF con IA — detecta estructura jerárquica APU (ítem + insumos)
 router.post(
   '/parse-pdf',
-  requireRole('DIRECTOR', 'APOYO_DIRECTOR'),
+  requirePermission('budget', 'editar'),
   upload.single('file'),
   async (req, res, next) => {
     try {
@@ -267,7 +267,7 @@ router.get('/:id/insumos', async (req, res, next) => {
 });
 
 // Guardar/reemplazar insumos de un APU
-router.put('/:id/insumos', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.put('/:id/insumos', requirePermission('budget', 'editar'), async (req, res, next) => {
   try {
     const { insumos } = req.body;
     if (!Array.isArray(insumos)) return res.status(400).json({ error: true, message: 'Se requiere array de insumos' });

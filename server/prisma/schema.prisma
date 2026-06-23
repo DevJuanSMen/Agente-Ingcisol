@@ -111,10 +111,15 @@ model Company {
   numeroCuenta       String?
   logoUrl            String?  @db.Text
   firmaUrl           String?  @db.Text
+  // Configuración tributaria (DIAN) por defecto de la empresa
+  ivaPorcentaje        Decimal @default(19) @db.Decimal(5, 2)
+  retefuentePorcentaje Decimal @default(0)  @db.Decimal(5, 2)
+  reteIcaPorMil        Decimal @default(0)  @db.Decimal(6, 3)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  users         User[]
+  users           User[]
+  rolePermissions RolePermission[]
   projects      Project[]
   suppliers     Supplier[]
   priceHistory  PriceHistory[]
@@ -373,6 +378,11 @@ model PurchaseOrder {
   fechaPago           DateTime?
   pdfUrl              String?     @db.Text
   alertaEnviada       Boolean     @default(false)
+  // Impuestos DIAN (override por OC; si null usa la config de la empresa)
+  transporte           Decimal  @default(0) @db.Decimal(15, 2)
+  ivaPorcentaje        Decimal? @db.Decimal(5, 2)
+  retefuentePorcentaje Decimal? @db.Decimal(5, 2)
+  reteIcaPorMil        Decimal? @db.Decimal(6, 3)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
@@ -433,6 +443,21 @@ model Notification {
   user    User    @relation(fields: [userId], references: [id])
 
   @@index([userId, leida])
+}
+
+model RolePermission {
+  id        String  @id @default(cuid())
+  companyId String
+  rol       Rol
+  modulo    String // requisitions|quotations|orders|tracking|suppliers|budget|projects|delegations|users|company|whatsapp
+  ver       Boolean @default(false)
+  crear     Boolean @default(false)
+  editar    Boolean @default(false)
+  eliminar  Boolean @default(false)
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, rol, modulo])
 }
 
 model AuditLog {

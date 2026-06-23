@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../api/client';
-import { useAuthStore } from '../../store/authStore';
+import { useAuthStore, useCan } from '../../store/authStore';
 import Table from '../../components/ui/Table';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -189,6 +189,7 @@ function DetailModal({ requisitionId, onClose }) {
 export default function RequisitionList() {
   const user = useAuthStore((s) => s.user);
   const canApprove = ['DIRECTOR', 'APOYO_DIRECTOR'].includes(user?.rol);
+  const canCreate = useCan('requisitions', 'crear');
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
@@ -334,9 +335,11 @@ export default function RequisitionList() {
           <h1 className="text-xl font-bold text-slate-800">Requisiciones</h1>
           <p className="text-sm text-slate-500 mt-0.5">{data.length} registros</p>
         </div>
-        <Link to="/requisitions/new">
-          <Button>+ Nueva requisición</Button>
-        </Link>
+        {canCreate && (
+          <Link to="/requisitions/new">
+            <Button>+ Nueva requisición</Button>
+          </Link>
+        )}
       </div>
 
       <Card>

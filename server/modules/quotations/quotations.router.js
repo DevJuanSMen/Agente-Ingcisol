@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { verifyToken } = require('../../shared/middleware/auth');
-const { requireRole } = require('../../shared/middleware/rbac');
+const { requirePermission } = require('../../shared/middleware/rbac');
 const { ok, created } = require('../../shared/utils/response');
 const quotationsService = require('./quotations.service');
 
@@ -21,7 +21,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // Invitar proveedores a cotizar (envía WhatsApp vía worker)
-router.post('/:id/invite', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:id/invite', requirePermission('quotations', 'editar'), async (req, res, next) => {
   try {
     const { supplierIds } = req.body;
     if (!Array.isArray(supplierIds) || supplierIds.length === 0) {
@@ -37,7 +37,7 @@ router.post('/:id/invite', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req
 });
 
 // Agregar ítem cotizado (precio de un proveedor) desde el dashboard
-router.post('/:id/items', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:id/items', requirePermission('quotations', 'editar'), async (req, res, next) => {
   try {
     const item = await quotationsService.addQuotationItem(
       req.user.companyId,
@@ -49,7 +49,7 @@ router.post('/:id/items', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
 });
 
 // Seleccionar ganador y emitir OC (un solo proveedor)
-router.put('/:id/winner', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.put('/:id/winner', requirePermission('quotations', 'editar'), async (req, res, next) => {
   try {
     const { supplierId, fechaEntregaPactada } = req.body;
     if (!supplierId) {
@@ -69,7 +69,7 @@ router.put('/:id/winner', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req,
 // Adjudicación dividida: varios proveedores, una OC por proveedor.
 // body: { awards: [{ supplierId, quotationItemIds?, fechaEntregaPactada? }] }
 //       o { auto: true } para repartir cada ítem al de menor precio.
-router.post('/:id/winners', requireRole('DIRECTOR', 'APOYO_DIRECTOR'), async (req, res, next) => {
+router.post('/:id/winners', requirePermission('quotations', 'editar'), async (req, res, next) => {
   try {
     let { awards } = req.body;
     if (req.body.auto) {
