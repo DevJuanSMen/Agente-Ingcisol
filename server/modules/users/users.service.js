@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../../shared/db');
+const { normalizeWhatsapp } = require('../../shared/utils/phone');
 
 const listUsers = async (companyId) =>
   prisma.user.findMany({
@@ -21,7 +22,7 @@ const createUser = async (companyId, data) => {
   }
 
   const user = await prisma.user.create({
-    data: { companyId, nombre, email, passwordHash, whatsapp, rol, topeAprobacion: topeAprobacion || 0 },
+    data: { companyId, nombre, email, passwordHash, whatsapp: normalizeWhatsapp(whatsapp) || null, rol, topeAprobacion: topeAprobacion || 0 },
     select: {
       id: true, nombre: true, email: true, whatsapp: true,
       rol: true, topeAprobacion: true, activo: true, createdAt: true,
@@ -31,13 +32,18 @@ const createUser = async (companyId, data) => {
 };
 
 const updateUser = async (companyId, userId, data) => {
-  const { rol, topeAprobacion, activo, whatsapp } = data;
+  const { nombre, rol, topeAprobacion, activo, whatsapp, password } = data;
   const user = await prisma.user.findFirst({ where: { id: userId, companyId } });
   if (!user) throw Object.assign(new Error('Usuario no encontrado'), { statusCode: 404 });
 
+  const updateData = { rol, topeAprobacion, activo, whatsapp: normalizeWhatsapp(whatsapp) || null };
+  if (nombre !== undefined) updateData.nombre = nombre;
+  // El Director puede resetear la contraseña: si llega `password` no vacío, se actualiza.
+  if (password) updateData.passwordHash = await bcrypt.hash(password, 12);
+
   return prisma.user.update({
     where: { id: userId },
-    data: { rol, topeAprobacion, activo, whatsapp },
+    data: updateData,
     select: {
       id: true, nombre: true, email: true, whatsapp: true,
       rol: true, topeAprobacion: true, activo: true, createdAt: true,

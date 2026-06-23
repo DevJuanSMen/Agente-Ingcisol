@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import Button from '../components/ui/Button';
 
@@ -11,6 +11,8 @@ export default function Login() {
   const login = useAuthStore((s) => s.login);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const navigate = useNavigate();
+  const location = useLocation();
+  const justReset = location.state?.reset;
 
   if (isAuthenticated) {
     navigate('/', { replace: true });
@@ -48,6 +50,12 @@ export default function Login() {
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
           <h2 className="text-lg font-semibold text-slate-800 mb-6">Iniciar sesión</h2>
 
+          {justReset && (
+            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+              Contraseña actualizada. Ya puedes iniciar sesión.
+            </div>
+          )}
+
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">
               {error}
@@ -81,6 +89,12 @@ export default function Login() {
                 placeholder="••••••••"
                 required
               />
+            </div>
+
+            <div className="text-right">
+              <Link to="/forgot-password" className="text-xs text-primary font-medium hover:underline">
+                ¿Olvidaste tu contraseña?
+              </Link>
             </div>
 
             <Button type="submit" loading={loading} className="w-full justify-center mt-2">

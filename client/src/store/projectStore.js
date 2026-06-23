@@ -15,14 +15,15 @@ export const useProjectStore = create(
           const { data } = await api.get('/projects');
           const list = data.data || [];
           set({ projects: list });
-          // Si no hay proyecto activo en store, usar el marcado como activo en BD
-          if (!get().activeProject) {
+          const current = get().activeProject;
+          if (current) {
+            const updated = list.find((p) => p.id === current.id);
+            // Si el proyecto activo persistido no está en la lista del usuario actual
+            // (p.ej. quedó en caché de otra sesión), reconciliar con el activo en BD.
+            set({ activeProject: updated || list.find((p) => p.activo) || null });
+          } else {
             const active = list.find((p) => p.activo);
             if (active) set({ activeProject: active });
-          } else {
-            // Actualizar datos del proyecto activo con los más recientes
-            const updated = list.find((p) => p.id === get().activeProject?.id);
-            if (updated) set({ activeProject: updated });
           }
         } finally {
           set({ loading: false });
@@ -54,6 +55,10 @@ export const useProjectStore = create(
       },
 
       clearProject: () => set({ activeProject: null }),
+
+      // Limpia todo el estado de proyecto (al cerrar/iniciar sesión) para que
+      // no "parpadee" el proyecto de una sesión anterior desde la caché.
+      reset: () => set({ activeProject: null, projects: [], loading: false }),
     }),
     {
       name: 'procura-project',

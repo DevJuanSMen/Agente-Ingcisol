@@ -12,7 +12,9 @@
       "Bash(node -c worker.js)",
       "Bash(docker exec *)",
       "Bash(docker restart *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(export DATABASE_URL=\"postgresql://procura:procura_secret@localhost:5432/procura_dev\")",
+      "Bash(npx prisma *)"
     ]
   }
 }

@@ -124,18 +124,24 @@ export default function UsersSettings() {
               />
             </div>
 
-            {!editUser && (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Contraseña *</label>
-                <input
-                  type="password"
-                  required
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
-            )}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                {editUser ? 'Resetear contraseña' : 'Contraseña *'}
+              </label>
+              <input
+                type="password"
+                required={!editUser}
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                placeholder={editUser ? 'Dejar en blanco para no cambiarla' : ''}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              {editUser && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Escribe una nueva contraseña para resetear el acceso de este usuario.
+                </p>
+              )}
+            </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">WhatsApp</label>

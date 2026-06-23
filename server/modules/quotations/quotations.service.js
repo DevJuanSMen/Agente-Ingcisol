@@ -51,6 +51,17 @@ const QUOTATION_INCLUDE = {
   },
 };
 
+// Casa un ítem de requisición (ri) con un ítem cotizado (qi). Si el ítem cotizado
+// trae requisitionItemId (flujo actual), el match es exacto; si no (ítems manuales
+// o antiguos), cae a comparar por itemApuId o por descripción.
+const itemMatches = (ri, qi) =>
+  qi.requisitionItemId
+    ? qi.requisitionItemId === ri.id
+    : (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
+      (qi.descripcion &&
+        ri.descripcion &&
+        qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim());
+
 // ── Cuadro comparativo + recomendación de proveedor favorito ─────────────────
 // Cruza ítems de requisición (filas) contra ítems cotizados por proveedor (columnas),
 // usa el precio del APU como referencia y recomienda el proveedor con mejor total.
@@ -74,11 +85,7 @@ const computeComparison = (quotation) => {
     const codigoAPU = ri.itemAPU?.codigo || ri.itemAPUInsumo?.itemAPU?.codigo || null;
 
     const quotes = qItems
-      .filter(
-        (qi) =>
-          (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
-          (qi.descripcion && ri.descripcion && qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim())
-      )
+      .filter((qi) => itemMatches(ri, qi))
       .map((qi) => ({
         supplierId: qi.supplierId,
         nombre: qi.supplier?.nombre,
@@ -245,13 +252,6 @@ const addQuotationItem = async (companyId, quotationId, data) => {
 };
 
 // ── Adjudicación: ítems ganados por proveedor ────────────────────────────────
-
-// Mismo criterio de casamiento que computeComparison.
-const itemMatches = (ri, qi) =>
-  (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
-  (qi.descripcion &&
-    ri.descripcion &&
-    qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim());
 
 // Construye la adjudicación recomendada: por cada ítem de la requisición, el
 // proveedor con menor precio unitario. Devuelve [{ supplierId, quotationItemIds }].

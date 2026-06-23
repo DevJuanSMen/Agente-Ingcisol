@@ -7,6 +7,7 @@ const redis = require('../../shared/redis');
 const prisma = require('../../shared/db');
 const { buildResponse, handleSupplierMessage } = require('./bot.context');
 const botFlows = require('./bot.flows');
+const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone');
 
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
 const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
@@ -118,9 +119,13 @@ class BotManager {
 
         logger.info(`[bot:${companyId}] Mensaje de: ${phone}`);
 
+        // Match por número nacional (últimos 10 dígitos): así coincide aunque el
+        // número guardado esté con o sin el indicativo de país (57).
+        const phoneNat = nationalNumber(phone) || phone;
+
         // ¿Es un proveedor registrado y activo? (los archivados no interceptan)
         const supplier = await prisma.supplier.findFirst({
-          where: { companyId, activo: true, whatsapp: { contains: phone } },
+          where: { companyId, activo: true, whatsapp: { contains: phoneNat } },
         });
 
         if (supplier) {
@@ -131,7 +136,7 @@ class BotManager {
 
         // ¿Es un usuario interno?
         const user = await prisma.user.findFirst({
-          where: { companyId, whatsapp: { contains: phone }, activo: true },
+          where: { companyId, whatsapp: { contains: phoneNat }, activo: true },
           select: { id: true, nombre: true, rol: true },
         });
 
@@ -188,7 +193,7 @@ class BotManager {
     const client = this.clients.get(companyId);
     if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
     if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    const sanitized = phone.replace(/\D/g, '');
+    const sanitized = normalizeWhatsapp(phone);
     return client.sendMessage(`${sanitized}@c.us`, text);
   }
 
@@ -197,7 +202,7 @@ class BotManager {
     const client = this.clients.get(companyId);
     if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
     if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    const sanitized = phone.replace(/\D/g, '');
+    const sanitized = normalizeWhatsapp(phone);
     const media = new MessageMedia('application/pdf', base64, filename || 'documento.pdf');
     return client.sendMessage(`${sanitized}@c.us`, media, {
       caption: caption || undefined,

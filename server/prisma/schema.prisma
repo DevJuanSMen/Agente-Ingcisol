@@ -241,6 +241,7 @@ model ItemAPU {
 model ItemAPUInsumo {
   id             String  @id @default(cuid())
   itemApuId      String
+  basicPriceId   String? // si este insumo es un básico compuesto (ej. concreto), su desglose
   tipo           String  // MATERIAL | M_DE_OBRA | EQUIPO | OTRO
   descripcion    String
   unidad         String  @default("UND")
@@ -250,6 +251,7 @@ model ItemAPUInsumo {
   createdAt      DateTime @default(now())
 
   itemAPU          ItemAPU         @relation(fields: [itemApuId], references: [id], onDelete: Cascade)
+  basicPrice       BasicPrice?     @relation(fields: [basicPriceId], references: [id], onDelete: SetNull)
   requisitionItems RequisitionItem[]
 }
 
@@ -302,18 +304,21 @@ model Requisition {
 }
 
 model RequisitionItem {
-  id              String  @id @default(cuid())
-  requisitionId   String
-  itemApuId       String?
-  itemApuInsumoId String?
-  descripcion     String
-  cantidad        Decimal @db.Decimal(15, 4)
-  unidad          String
-  enAPU           Boolean @default(false)
+  id                 String  @id @default(cuid())
+  requisitionId      String
+  itemApuId          String?
+  itemApuInsumoId    String?
+  basicPriceInsumoId String? // sub-insumo de un básico compuesto (ej. cemento de concreto)
+  descripcion        String
+  cantidad           Decimal @db.Decimal(15, 4)
+  unidad             String
+  enAPU              Boolean @default(false)
 
-  requisition   Requisition    @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  itemAPU       ItemAPU?       @relation(fields: [itemApuId], references: [id])
-  itemAPUInsumo ItemAPUInsumo? @relation(fields: [itemApuInsumoId], references: [id], onDelete: SetNull)
+  requisition      Requisition       @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  itemAPU          ItemAPU?          @relation(fields: [itemApuId], references: [id])
+  itemAPUInsumo    ItemAPUInsumo?    @relation(fields: [itemApuInsumoId], references: [id], onDelete: SetNull)
+  basicPriceInsumo BasicPriceInsumo? @relation(fields: [basicPriceInsumoId], references: [id], onDelete: SetNull)
+  quotationItems   QuotationItem[]
 }
 
 model Quotation {
@@ -332,22 +337,28 @@ model Quotation {
 }
 
 model QuotationItem {
-  id              String        @id @default(cuid())
-  quotationId     String
-  supplierId      String
-  itemApuId       String?
-  purchaseOrderId String?
-  descripcion     String?
-  precioUnitario  Decimal       @db.Decimal(15, 2)
-  precioTotal     Decimal       @db.Decimal(15, 2)
-  tiempoEntrega   Int           @default(0)
-  fuente          FuentePrecio  @default(HISTORIAL)
-  confiabilidad   Confiabilidad @default(REFERENCIA)
+  id                String        @id @default(cuid())
+  quotationId       String
+  supplierId        String
+  itemApuId         String?
+  requisitionItemId String?
+  purchaseOrderId   String?
+  descripcion       String?
+  precioUnitario    Decimal       @db.Decimal(15, 2)
+  precioTotal       Decimal       @db.Decimal(15, 2)
+  tiempoEntrega     Int           @default(0)
+  fuente            FuentePrecio  @default(HISTORIAL)
+  confiabilidad     Confiabilidad @default(REFERENCIA)
 
-  quotation     Quotation      @relation(fields: [quotationId], references: [id], onDelete: Cascade)
-  supplier      Supplier       @relation(fields: [supplierId], references: [id])
-  itemAPU       ItemAPU?       @relation(fields: [itemApuId], references: [id], onDelete: SetNull)
-  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  quotation       Quotation        @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  supplier        Supplier         @relation(fields: [supplierId], references: [id])
+  itemAPU         ItemAPU?         @relation(fields: [itemApuId], references: [id], onDelete: SetNull)
+  requisitionItem RequisitionItem? @relation(fields: [requisitionItemId], references: [id], onDelete: SetNull)
+  purchaseOrder   PurchaseOrder?   @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  // Una sola cotización por proveedor y por ítem de requisición: evita duplicados
+  // cuando el proveedor responde más de una vez (se actualiza en lugar de apilar).
+  @@unique([quotationId, supplierId, requisitionItemId])
 }
 
 model QuotationInvite {
@@ -419,12 +430,32 @@ model BasicPrice {
   precioUnitario Decimal   @db.Decimal(15, 2)
   fuente         String?
   vigencia       DateTime?
+  esCompuesto    Boolean   @default(false) // true si tiene desglose de insumos (ej. concreto)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id])
+  company        Company            @relation(fields: [companyId], references: [id])
+  insumos        BasicPriceInsumo[] // desglose del básico compuesto (cemento, arena, ...)
+  itemAPUInsumos ItemAPUInsumo[]    // insumos de APU vinculados a este básico
 
   @@unique([companyId, codigo])
+}
+
+// Desglose de un básico compuesto (ej. concreto → cemento, gravilla, arena).
+// Permite requisicionar un sub-insumo en lugar del básico completo.
+model BasicPriceInsumo {
+  id             String   @id @default(cuid())
+  basicPriceId   String
+  tipo           String   @default("MATERIAL") // MATERIAL | M_DE_OBRA | EQUIPO | OTRO
+  descripcion    String
+  unidad         String   @default("UND")
+  rendimiento    Decimal  @default(0) @db.Decimal(15, 4)
+  precioUnitario Decimal  @default(0) @db.Decimal(15, 2)
+  precioTotal    Decimal  @default(0) @db.Decimal(15, 2)
+  createdAt      DateTime @default(now())
+
+  basicPrice       BasicPrice        @relation(fields: [basicPriceId], references: [id], onDelete: Cascade)
+  requisitionItems RequisitionItem[]
 }
 
 model Notification {

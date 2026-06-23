@@ -28,12 +28,14 @@ const newApuItem = () => ({
   tipo: 'APU',
   apuId: '',
   insumoId: '',      // ItemAPUInsumo.id when a specific insumo is selected
+  subInsumoId: '',   // BasicPriceInsumo.id when a sub-insumo of a básico is selected
   descripcion: '',
   unidad: '',
   codigo: '',
   precioUnitario: 0,
   cantidad: 1,
   _apuObj: null,     // cached APU object for insumo list
+  _insumoObj: null,  // cached insumo object (carries basicPrice breakdown)
 });
 
 const newFreeItem = () => ({ tipo: 'LIBRE', descripcion: '', unidad: 'UND', codigo: '', cantidad: 1 });
@@ -168,9 +170,70 @@ function InsumoSelector({ apu, selectedInsumoId, onSelect }) {
                   {INSUMO_TIPO_LABEL[ins.tipo] || ins.tipo}
                 </span>
                 <p className="text-xs text-slate-700 truncate">{ins.descripcion}</p>
+                {ins.basicPrice?.insumos?.length > 0 && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium flex-shrink-0">
+                    desglosable
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-400 mt-0.5 pl-0">
                 {ins.unidad} · Rend: {Number(ins.rendimiento).toLocaleString('es-CO', { maximumFractionDigits: 4 })} · {fmtCOP(ins.precioUnitario)}
+              </p>
+            </div>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Sub-insumo selector (3er nivel: desglose de un básico compuesto) ─────────
+function SubInsumoSelector({ insumo, selectedSubId, onSelect }) {
+  const subs = insumo?.basicPrice?.insumos || [];
+  if (!subs.length) return null;
+
+  return (
+    <div className="mt-2 ml-4 rounded-lg border border-green-200 overflow-hidden">
+      <div className="bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 border-b border-green-200">
+        «{insumo.descripcion}» tiene desglose — pide el básico completo o un sub-insumo
+      </div>
+      <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto bg-white">
+        {/* Opción "básico completo" */}
+        <label className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50 ${!selectedSubId ? 'bg-green-50/60' : ''}`}>
+          <input
+            type="radio"
+            name={`sub-${insumo.id}`}
+            checked={!selectedSubId}
+            onChange={() => onSelect(null)}
+            className="accent-green-600 w-3.5 h-3.5 flex-shrink-0"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-slate-700">{insumo.descripcion} (completo)</p>
+            <p className="text-xs text-slate-400">{insumo.unidad} · {fmtCOP(insumo.precioUnitario)}</p>
+          </div>
+        </label>
+        {/* Cada sub-insumo */}
+        {subs.map((sub) => (
+          <label
+            key={sub.id}
+            className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-green-50/40 ${selectedSubId === sub.id ? 'bg-green-50/60' : ''}`}
+          >
+            <input
+              type="radio"
+              name={`sub-${insumo.id}`}
+              checked={selectedSubId === sub.id}
+              onChange={() => onSelect(sub)}
+              className="accent-green-600 w-3.5 h-3.5 flex-shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${INSUMO_TIPO_STYLE[sub.tipo] || INSUMO_TIPO_STYLE.OTRO}`}>
+                  {INSUMO_TIPO_LABEL[sub.tipo] || sub.tipo}
+                </span>
+                <p className="text-xs text-slate-700 truncate">{sub.descripcion}</p>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {sub.unidad} · {fmtCOP(sub.precioUnitario)}
               </p>
             </div>
           </label>
@@ -243,7 +306,9 @@ export default function RequisitionNew() {
         codigo:        apu.codigo,
         precioUnitario: Number(apu.precioUnitario || 0),
         insumoId:      '',
+        subInsumoId:   '',
         _apuObj:       apu,
+        _insumoObj:    null,
       };
       return next;
     });
@@ -258,6 +323,8 @@ export default function RequisitionNew() {
         next[i] = {
           ...next[i],
           insumoId:      ins.id,
+          subInsumoId:   '',
+          _insumoObj:    ins,
           descripcion:   ins.descripcion,
           unidad:        ins.unidad,
           precioUnitario: Number(ins.precioUnitario || 0),
@@ -267,9 +334,38 @@ export default function RequisitionNew() {
         next[i] = {
           ...next[i],
           insumoId:      '',
+          subInsumoId:   '',
+          _insumoObj:    null,
           descripcion:   apu?.descripcion || '',
           unidad:        apu?.unidad      || '',
           precioUnitario: Number(apu?.precioUnitario || 0),
+        };
+      }
+      return next;
+    });
+  };
+
+  // User selected a sub-insumo of a básico compuesto (or null = básico completo)
+  const selectSubInsumo = (i, sub) => {
+    setItems((prev) => {
+      const next = [...prev];
+      const ins  = next[i]._insumoObj;
+      if (sub) {
+        next[i] = {
+          ...next[i],
+          subInsumoId:   sub.id,
+          descripcion:   sub.descripcion,
+          unidad:        sub.unidad,
+          precioUnitario: Number(sub.precioUnitario || 0),
+        };
+      } else {
+        // Revert to insumo (básico completo)
+        next[i] = {
+          ...next[i],
+          subInsumoId:   '',
+          descripcion:   ins?.descripcion || '',
+          unidad:        ins?.unidad      || '',
+          precioUnitario: Number(ins?.precioUnitario || 0),
         };
       }
       return next;
@@ -292,12 +388,13 @@ export default function RequisitionNew() {
         fechaLimite: fechaLimite || null,
         canal: 'APP',
         items: validItems.map((it) => ({
-          descripcion:     it.descripcion,
-          cantidad:        parseFloat(it.cantidad) || 1,
-          unidad:          it.unidad || 'UND',
-          codigo:          it.codigo || '',
-          itemApuId:       it.apuId    || null,
-          itemApuInsumoId: it.insumoId || null,
+          descripcion:        it.descripcion,
+          cantidad:           parseFloat(it.cantidad) || 1,
+          unidad:             it.unidad || 'UND',
+          codigo:             it.codigo || '',
+          itemApuId:          it.apuId       || null,
+          itemApuInsumoId:    it.insumoId    || null,
+          basicPriceInsumoId: it.subInsumoId || null,
         })),
       });
       navigate('/requisitions');
@@ -445,6 +542,15 @@ export default function RequisitionNew() {
                         apu={item._apuObj}
                         selectedInsumoId={item.insumoId}
                         onSelect={(ins) => selectInsumo(i, ins)}
+                      />
+                    )}
+
+                    {/* Sub-insumo selector — aparece si el insumo elegido tiene desglose */}
+                    {item._insumoObj?.basicPrice?.insumos?.length > 0 && (
+                      <SubInsumoSelector
+                        insumo={item._insumoObj}
+                        selectedSubId={item.subInsumoId}
+                        onSelect={(sub) => selectSubInsumo(i, sub)}
                       />
                     )}
 

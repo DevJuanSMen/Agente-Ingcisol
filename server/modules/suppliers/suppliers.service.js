@@ -1,4 +1,5 @@
 const prisma = require('../../shared/db');
+const { normalizeWhatsapp } = require('../../shared/utils/phone');
 
 const listSuppliers = async (companyId, filters = {}) => {
   const where = { companyId };
@@ -27,7 +28,7 @@ const getSupplier = async (companyId, supplierId) => {
 const createSupplier = async (companyId, data) => {
   const { nombre, nit, ciudad, segmento, whatsapp, email, homologado } = data;
   return prisma.supplier.create({
-    data: { companyId, nombre, nit, ciudad, segmento, whatsapp, email, homologado: homologado || false },
+    data: { companyId, nombre, nit, ciudad, segmento, whatsapp: normalizeWhatsapp(whatsapp) || null, email, homologado: homologado || false },
   });
 };
 
@@ -62,7 +63,7 @@ const updateSupplier = async (companyId, supplierId, data) => {
   const { nombre, nit, ciudad, segmento, whatsapp, email, homologado } = data;
   return prisma.supplier.update({
     where: { id: supplierId },
-    data: { nombre, nit, ciudad, segmento, whatsapp, email, homologado },
+    data: { nombre, nit, ciudad, segmento, whatsapp: normalizeWhatsapp(whatsapp) || null, email, homologado },
   });
 };
 
@@ -77,7 +78,7 @@ const importSuppliers = async (companyId, suppliers, projectId = null) => {
       nit: s.nit ? String(s.nit).trim() : null,
       ciudad: s.ciudad || s.city || null,
       segmento: SEGMENTOS_VALIDOS.includes(s.segmento) ? s.segmento : 'MATERIALES',
-      whatsapp: s.whatsapp || s.celular || null,
+      whatsapp: normalizeWhatsapp(s.whatsapp || s.celular) || null,
       email: s.email || s.correo || null,
       homologado: false,
       origen: 'LOCAL',

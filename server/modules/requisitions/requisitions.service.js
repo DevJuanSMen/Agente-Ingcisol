@@ -3,14 +3,23 @@ const redis = require('../../shared/redis');
 const notifications = require('../notifications/notifications.service');
 const { publishCommand } = require('../whatsapp/bot.ipc');
 
-const generateConsecutivo = async (projectId) => {
+// Calcula el siguiente consecutivo a partir del número MÁS ALTO ya usado (no del
+// conteo): así no se reutilizan números si se borra una requisición intermedia.
+// `bump` permite saltar números extra cuando un reintento detecta colisión.
+const generateConsecutivo = async (projectId, bump = 0) => {
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   const year = new Date().getFullYear();
-  const count = await prisma.requisition.count({
+  const existing = await prisma.requisition.findMany({
     where: { projectId, consecutivo: { startsWith: `REQ-${year}` } },
+    select: { consecutivo: true },
   });
+  let maxSeq = 0;
+  for (const r of existing) {
+    const seq = parseInt((r.consecutivo.split('-')[2] || ''), 10);
+    if (!Number.isNaN(seq) && seq > maxSeq) maxSeq = seq;
+  }
   const projCode = project.contratoNo.split('-').pop() || 'PROY';
-  return `REQ-${year}-${String(count + 1).padStart(3, '0')}-${projCode}`;
+  return `REQ-${year}-${String(maxSeq + 1 + bump).padStart(3, '0')}-${projCode}`;
 };
 
 const listRequisitions = async (companyId, filters = {}) => {
@@ -75,33 +84,46 @@ const createRequisition = async (companyId, userId, data) => {
   const allInAPU = items.every((i) => i.itemApuId || (!i.codigo || apuMapByCodigo[i.codigo]));
   const estado = allInAPU ? 'ENVIADA' : 'PENDIENTE_JUST';
 
-  const consecutivo = await generateConsecutivo(projectId);
-
-  const requisition = await prisma.requisition.create({
-    data: {
-      consecutivo,
-      projectId,
-      solicitanteId: userId,
-      canal: canal || 'APP',
-      estado,
-      prioridad: prioridad || 'MEDIA',
-      fechaLimite: fechaLimite ? new Date(fechaLimite) : null,
-      items: {
-        create: items.map((item) => {
-          const resolvedApuId = item.itemApuId || apuMapByCodigo[item.codigo]?.id || null;
-          return {
-            descripcion:     item.descripcion,
-            cantidad:        parseFloat(item.cantidad) || 1,
-            unidad:          item.unidad || 'GL',
-            itemApuId:       resolvedApuId,
-            itemApuInsumoId: item.itemApuInsumoId || null,
-            enAPU:           !!resolvedApuId,
-          };
-        }),
-      },
-    },
-    include: { items: true },
+  const itemsData = items.map((item) => {
+    const resolvedApuId = item.itemApuId || apuMapByCodigo[item.codigo]?.id || null;
+    return {
+      descripcion:        item.descripcion,
+      cantidad:           parseFloat(item.cantidad) || 1,
+      unidad:             item.unidad || 'GL',
+      itemApuId:          resolvedApuId,
+      itemApuInsumoId:    item.itemApuInsumoId || null,
+      basicPriceInsumoId: item.basicPriceInsumoId || null,
+      enAPU:              !!resolvedApuId,
+    };
   });
+
+  // El consecutivo puede chocar si dos requisiciones se crean a la vez (el unique
+  // constraint lo rechaza). Reintentamos generando el siguiente número disponible.
+  let requisition;
+  let consecutivo;
+  for (let attempt = 0; ; attempt += 1) {
+    consecutivo = await generateConsecutivo(projectId, attempt);
+    try {
+      requisition = await prisma.requisition.create({
+        data: {
+          consecutivo,
+          projectId,
+          solicitanteId: userId,
+          canal: canal || 'APP',
+          estado,
+          prioridad: prioridad || 'MEDIA',
+          fechaLimite: fechaLimite ? new Date(fechaLimite) : null,
+          items: { create: itemsData },
+        },
+        include: { items: true },
+      });
+      break;
+    } catch (err) {
+      const isDup = err.code === 'P2002' && (err.meta?.target || []).includes?.('consecutivo');
+      if (isDup && attempt < 5) continue; // colisión: probar el siguiente número
+      throw err;
+    }
+  }
 
   // Notificación in-app a quienes aprueban
   await notifications.notifyRoles(companyId, ['DIRECTOR', 'APOYO_DIRECTOR'], {

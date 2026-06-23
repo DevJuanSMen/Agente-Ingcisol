@@ -35,6 +35,26 @@ router.post('/login', async (req, res, next) => {
   }
 });
 
+// Recuperación de contraseña por código de WhatsApp (sin autenticación)
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const result = await authService.requestPasswordReset(req.body.email);
+    ok(res, result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { email, code, password } = req.body;
+    const result = await authService.resetPasswordWithCode(email, code, password);
+    ok(res, result);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/refresh', verifyToken, async (req, res, next) => {
   try {
     const token = await authService.refreshToken(req.user.id);

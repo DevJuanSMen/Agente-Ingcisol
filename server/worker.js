@@ -41,6 +41,14 @@ subscribeToCommands(async (cmd) => {
       await notifyWinnerSelection(cmd.companyId, cmd.quotationId);
     } else if (cmd.action === 'send_po_documents') {
       await sendPoDocuments(cmd.companyId, cmd.orderIds);
+    } else if (cmd.action === 'send_password_reset_code') {
+      const saludo = cmd.nombre ? `Hola ${cmd.nombre}, ` : '';
+      const msg =
+        `🔐 *Recuperación de contraseña — PROCURA AI*\n\n` +
+        `${saludo}tu código para restablecer la contraseña es:\n\n` +
+        `*${cmd.code}*\n\n` +
+        `Vence en 10 minutos. Si no lo solicitaste, ignora este mensaje.`;
+      enqueueText(cmd.companyId, cmd.phone, msg);
     }
   } catch (err) {
     logger.error('[worker] Error procesando comando:', err.message);

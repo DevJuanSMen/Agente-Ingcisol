@@ -310,14 +310,15 @@ const buildDbContext = async (companyId) => {
 
 // ── Manejo de respuestas de proveedores ─────────────────────────────────────
 
+// Punto de entrada: decide si el mensaje del proveedor es una cotización (precios)
+// o una respuesta sobre una orden de compra (confirmación / fecha de entrega).
 const handleSupplierMessage = async (text, companyId, supplierId, supplierName) => {
   logger.info(`[bot.context] Mensaje de proveedor ${supplierName}: "${text.slice(0, 80)}"`);
 
-  // Buscar cotización activa donde este proveedor fue invitado y no ha respondido
+  // Contexto A: cotización abierta donde fue invitado (permite re-cotizar/corregir).
   const invite = await prisma.quotationInvite.findFirst({
     where: {
       supplierId,
-      respondido: false,
       quotation: {
         estado: { in: ['EN_BUSQUEDA', 'PENDIENTE_APROBACION'] },
         requisition: { project: { companyId } },
@@ -325,29 +326,76 @@ const handleSupplierMessage = async (text, companyId, supplierId, supplierName) 
     },
     include: {
       quotation: {
-        include: {
-          requisition: {
-            include: { items: { include: { itemAPU: true } } },
-          },
-        },
+        include: { requisition: { include: { items: { include: { itemAPU: true } } } } },
       },
     },
     orderBy: { sentAt: 'desc' },
   });
 
-  if (!invite) {
-    // Puede ser un saludo o mensaje sin contexto de cotización
+  // Contexto B: orden de compra activa pendiente de confirmar/entregar.
+  const activePO = await prisma.purchaseOrder.findFirst({
+    where: {
+      supplierId,
+      estado: { in: ['EMITIDA', 'ENVIADA'] },
+      quotation: { requisition: { project: { companyId } } },
+    },
+    include: {
+      quotation: { include: { requisition: { select: { consecutivo: true } } } },
+    },
+    orderBy: { fechaEmision: 'desc' },
+  });
+
+  // Sin contexto → conversación general.
+  if (!invite && !activePO) {
     return groqFallback(text, companyId, { isSupplier: true, supplierName });
   }
 
-  const quotation = invite.quotation;
-  const reqItems = quotation.requisition.items;
+  // Un solo contexto → ruta directa. Con ambos, la IA decide la intención.
+  if (invite && !activePO) return handleSupplierQuote(text, companyId, supplierId, supplierName, invite);
+  if (activePO && !invite) return handleSupplierDelivery(text, companyId, supplierName, activePO);
 
-  // Usar Groq para parsear los precios de la respuesta del proveedor
+  const intent = await classifySupplierIntent(text);
+  if (intent === 'ENTREGA') return handleSupplierDelivery(text, companyId, supplierName, activePO);
+  // COTIZACION o ambiguo: por defecto tratamos como cotización (el parser pedirá
+  // precios si no los encuentra), porque tiene una solicitud de precios abierta.
+  return handleSupplierQuote(text, companyId, supplierId, supplierName, invite);
+};
+
+// Clasifica la intención cuando el proveedor tiene cotización Y orden activas.
+const classifySupplierIntent = async (text) => {
   try {
     const { getGroq } = require('../../shared/utils/groq');
     const groq = getGroq();
+    const c = await groq.chat.completions.create({
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        {
+          role: 'system',
+          content: `Clasifica el mensaje de un proveedor en UNA categoría. Responde SOLO JSON {"intent":"COTIZACION|ENTREGA|OTRO"}.
+- COTIZACION: está dando precios o cotizando materiales.
+- ENTREGA: confirma una orden de compra, da/cambia una fecha de entrega, o avisa que ya entregó/despachó.
+- OTRO: saludo u otra cosa.`,
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0,
+      max_tokens: 40,
+      response_format: { type: 'json_object' },
+    });
+    return JSON.parse(c.choices[0].message.content).intent || 'OTRO';
+  } catch {
+    return 'OTRO';
+  }
+};
 
+// ── Cotización: parsea precios y los guarda (un ítem por requisición/proveedor) ──
+const handleSupplierQuote = async (text, companyId, supplierId, supplierName, invite) => {
+  const quotation = invite.quotation;
+  const reqItems = quotation.requisition.items;
+
+  try {
+    const { getGroq } = require('../../shared/utils/groq');
+    const groq = getGroq();
     const itemsList = reqItems.map((it, i) => `${i + 1}. ${it.descripcion} (${it.unidad})`).join('\n');
 
     const completion = await groq.chat.completions.create({
@@ -362,8 +410,7 @@ ${itemsList}
 Extrae los precios de la respuesta. Responde SOLO con JSON válido:
 {
   "items": [
-    {"itemIndex": 0, "descripcion": "...", "precioUnitario": 28000, "tiempoEntregaDias": 3},
-    ...
+    {"itemIndex": 0, "descripcion": "...", "precioUnitario": 28000, "tiempoEntregaDias": 3}
   ],
   "notas": "observación adicional o null"
 }
@@ -390,7 +437,8 @@ Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica 
       return `Gracias ${supplierName}. No encontré precios en su respuesta. Por favor indique el precio de cada ítem: ${reqItems.map((i) => i.descripcion).join(', ')}.`;
     }
 
-    // Guardar los QuotationItem
+    // Guardar los QuotationItem — upsert por (cotización, proveedor, ítem de
+    // requisición): si el proveedor recotiza, ACTUALIZA en vez de duplicar.
     const createdItems = [];
     for (const pi of parsedItems) {
       const reqItem = reqItems[pi.itemIndex];
@@ -400,18 +448,25 @@ Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica 
 
       await prisma.quotationItem.upsert({
         where: {
-          id: `${quotation.id}_${supplierId}_${reqItem.id}`.slice(0, 30) + '_dummy', // fallback
+          quotationId_supplierId_requisitionItemId: {
+            quotationId: quotation.id,
+            supplierId,
+            requisitionItemId: reqItem.id,
+          },
         },
         update: {
           precioUnitario,
           precioTotal: precioUnitario * cantidad,
           tiempoEntrega: pi.tiempoEntregaDias || 0,
+          itemApuId: reqItem.itemApuId || null,
+          descripcion: reqItem.descripcion,
           fuente: 'LOCAL',
           confiabilidad: 'LOCAL',
         },
         create: {
           quotationId: quotation.id,
           supplierId,
+          requisitionItemId: reqItem.id,
           itemApuId: reqItem.itemApuId || null,
           descripcion: reqItem.descripcion,
           precioUnitario,
@@ -420,21 +475,6 @@ Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica 
           fuente: 'LOCAL',
           confiabilidad: 'LOCAL',
         },
-      }).catch(() => {
-        // Si upsert falla por id generado, hacer create directo
-        return prisma.quotationItem.create({
-          data: {
-            quotationId: quotation.id,
-            supplierId,
-            itemApuId: reqItem.itemApuId || null,
-            descripcion: reqItem.descripcion,
-            precioUnitario,
-            precioTotal: precioUnitario * cantidad,
-            tiempoEntrega: pi.tiempoEntregaDias || 0,
-            fuente: 'LOCAL',
-            confiabilidad: 'LOCAL',
-          },
-        });
       });
       createdItems.push({ descripcion: reqItem.descripcion, precioUnitario, cantidad });
     }
@@ -491,6 +531,108 @@ Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica 
   }
 };
 
+// ── Entrega: el proveedor confirma la OC, fija fecha o avisa que ya entregó ──────
+const handleSupplierDelivery = async (text, companyId, supplierName, activePO) => {
+  const trackingService = require('../tracking/tracking.service');
+  const consecutivo = activePO.consecutivo;
+
+  let parsed = { tipo: 'OTRO', fechaEntrega: null, notas: null };
+  try {
+    const { getGroq } = require('../../shared/utils/groq');
+    const groq = getGroq();
+    const hoy = new Date().toISOString().slice(0, 10);
+    const c = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `Hoy es ${hoy}. Un proveedor responde sobre la orden de compra ${consecutivo}. Extrae en JSON válido:
+{"tipo":"CONFIRMAR|ENTREGADO|OTRO","fechaEntrega":"YYYY-MM-DD"|null,"notas":"texto"|null}
+- CONFIRMAR: acepta la orden y/o dice cuándo entregará. Si menciona una fecha (incluso relativa como "el viernes" o "en 3 días"), conviértela a YYYY-MM-DD respecto a hoy.
+- ENTREGADO: dice que ya entregó o despachó el material.
+- OTRO: no se entiende o no tiene que ver con la entrega.`,
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0.1,
+      max_tokens: 150,
+      response_format: { type: 'json_object' },
+    });
+    parsed = JSON.parse(c.choices[0].message.content);
+  } catch (err) {
+    logger.error('[bot.context] Error parseando confirmación de entrega:', err.message);
+  }
+
+  if (parsed.tipo !== 'CONFIRMAR' && parsed.tipo !== 'ENTREGADO') {
+    return `Gracias *${supplierName}*. Sobre la orden *${consecutivo}*, por favor confirme la fecha de entrega (ej: "entrego el 30 de junio") o avísenos cuando haya entregado.`;
+  }
+
+  const fecha = parsed.fechaEntrega ? new Date(parsed.fechaEntrega) : null;
+  if (fecha && Number.isNaN(fecha.getTime())) {
+    return `Gracias *${supplierName}*. No entendí la fecha. ¿Podría indicarla así: "entrego el 30 de junio"?`;
+  }
+
+  try {
+    const { order } = await trackingService.confirmOrderFromSupplier(companyId, activePO.id, {
+      tipo: parsed.tipo,
+      fecha,
+    });
+    await notifyDirectorsOrderUpdate(companyId, order, supplierName, parsed);
+
+    if (parsed.tipo === 'ENTREGADO') {
+      return `✅ Gracias *${supplierName}*. Registramos la *entrega* de la orden *${consecutivo}*. Avisamos al equipo para el cierre y pago.`;
+    }
+    const fechaTxt = order.fechaEntregaPactada
+      ? ` con entrega pactada para el *${new Date(order.fechaEntregaPactada).toLocaleDateString('es-CO')}*`
+      : '';
+    return `✅ Gracias *${supplierName}*. Confirmamos la orden *${consecutivo}*${fechaTxt}.\nLe enviaremos un recordatorio cerca de la fecha de entrega.`;
+  } catch (err) {
+    logger.error('[bot.context] Error confirmando OC del proveedor:', err.message);
+    return `Gracias ${supplierName}. Recibimos su mensaje sobre la orden ${consecutivo}, pero hubo un error al registrarlo. Un agente lo revisará.`;
+  }
+};
+
+// Avisa a los directores (in-app + WhatsApp) que un proveedor confirmó/entregó.
+const notifyDirectorsOrderUpdate = async (companyId, order, supplierName, parsed) => {
+  const entregado = parsed.tipo === 'ENTREGADO';
+  const titulo = entregado
+    ? `${supplierName} marcó ENTREGADA la OC ${order.consecutivo}`
+    : `${supplierName} confirmó la OC ${order.consecutivo}`;
+  const fechaTxt = order.fechaEntregaPactada
+    ? ` Entrega: ${new Date(order.fechaEntregaPactada).toLocaleDateString('es-CO')}.`
+    : '';
+  const mensaje = `${parsed.notas ? parsed.notas + '.' : ''}${fechaTxt}`.trim() || 'Actualización del proveedor.';
+
+  const directors = await prisma.user.findMany({
+    where: { companyId, rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] }, activo: true },
+    select: { id: true, whatsapp: true },
+  });
+
+  await prisma.notification
+    .createMany({
+      data: directors.map((d) => ({
+        companyId,
+        userId: d.id,
+        tipo: entregado ? 'OC_ENTREGADA' : 'OC_EMITIDA',
+        titulo,
+        mensaje,
+        entidad: 'PurchaseOrder',
+        entidadId: order.id,
+      })),
+    })
+    .catch(() => {});
+
+  try {
+    const { enqueueText } = require('./sendQueue');
+    const icono = entregado ? '📦' : '✅';
+    for (const d of directors) {
+      if (d.whatsapp) enqueueText(companyId, d.whatsapp, `${icono} *${titulo}*.${fechaTxt}${parsed.notas ? `\n📝 ${parsed.notas}` : ''}`);
+    }
+  } catch (err) {
+    logger.error('[bot.context] No se pudo notificar a directores por WhatsApp:', err.message);
+  }
+};
+
 // ── Fallback IA ─────────────────────────────────────────────────────────────
 
 const groqFallback = async (text, companyId, opts = {}) => {
@@ -509,7 +651,7 @@ ${context}`
 El usuario que te habla es ${opts.rol || 'un usuario'} de la empresa.
 Responde en español, de forma clara y concisa (máximo 3 párrafos cortos), usando *negrillas* para énfasis en WhatsApp.
 Solo responde sobre compras, presupuestos, requisiciones, cotizaciones, órdenes de compra, proveedores y proyectos.
-Si el usuario necesita ejecutar una acción (aprobar, crear requisición, etc.), indícale que lo haga desde el panel web.
+Puedes crear requisiciones, consultar el estado, aprobar y rechazar directamente desde este chat: invita al usuario a pedírtelo en lenguaje natural (ej: "necesito 50 bultos de cemento", "¿en qué va REQ-2026-003?", "aprueba REQ-2026-003").
 
 DATOS ACTUALES DEL SISTEMA:
 ${context}`;
@@ -531,98 +673,76 @@ ${context}`;
   }
 };
 
-// ── Creación de requisición por lenguaje natural ─────────────────────────────
+// ── Creación de requisición ──────────────────────────────────────────────────
 
-// Palabras que indican intención de solicitar materiales
-const REQ_INTENT_RE = /\b(necesito|necesitamos|requiero|requerimos|solicito|solicitamos|pido|pedir|hace falta|hacen falta|requisici[oó]n|me mandan|env[ií]en|comprar|compra de|para obra)\b/i;
-
-const tryCreateRequisition = async (text, companyId, user) => {
-  const project = await prisma.project.findFirst({ where: { companyId, activo: true } });
-  if (!project) return 'No hay un proyecto activo. Pide al director que active un proyecto antes de crear requisiciones.';
-
-  // 1. Extraer ítems con IA
-  let extracted = [];
-  try {
-    const { getGroq } = require('../../shared/utils/groq');
-    const groq = getGroq();
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        {
-          role: 'system',
-          content: `Eres un asistente de requisiciones de obra en Colombia. El usuario solicita materiales/insumos.
-Extrae cada ítem solicitado. Responde SOLO JSON válido:
-{"items":[{"descripcion":"cemento gris","cantidad":50,"unidad":"bulto"}],"prioridad":"ALTA|MEDIA|BAJA"}
-Si no menciona cantidad usa 1. Si no menciona unidad usa "UND". Si no menciona prioridad usa "MEDIA".
-Si el mensaje NO es una solicitud de materiales, responde {"items":[]}.`,
-        },
-        { role: 'user', content: text },
-      ],
-      temperature: 0.1,
-      max_tokens: 600,
-      response_format: { type: 'json_object' },
-    });
-    const parsed = JSON.parse(completion.choices[0].message.content);
-    extracted = Array.isArray(parsed.items) ? parsed.items : [];
-    var prioridad = ['ALTA', 'MEDIA', 'BAJA'].includes(parsed.prioridad) ? parsed.prioridad : 'MEDIA';
-  } catch (err) {
-    logger.error('[bot.context] Error extrayendo requisición:', err.message);
-    return null; // dejar que caiga al fallback general
-  }
-
-  if (extracted.length === 0) return null; // no era una requisición → fallback
-
-  // 2. Casar cada ítem contra el APU / insumos del proyecto
+// Casa ítems extraídos (descripción/cantidad/unidad) contra el APU/insumos del
+// proyecto y arma el payload de creación + un resumen legible para WhatsApp.
+const matchExtractedItems = async (companyId, extracted) => {
   const items = [];
   const resumen = [];
   for (const ex of extracted) {
+    const cantidad = Number(ex.cantidad) || 1;
     const matches = await apuService.findBudgetMatches(companyId, ex.descripcion, 1);
     const best = matches[0];
     if (best) {
       items.push({
         descripcion: best.descripcion,
-        cantidad: Number(ex.cantidad) || 1,
+        cantidad,
         unidad: ex.unidad || best.unidad || 'UND',
         codigo: best.codigo,
         itemApuId: best.itemApuId,
         itemApuInsumoId: best.itemApuInsumoId || null,
       });
       const etiqueta = best.type === 'INSUMO' ? `insumo de ${best.codigo}` : `APU ${best.codigo}`;
-      resumen.push(`✅ ${ex.cantidad || 1} ${ex.unidad || best.unidad} *${best.descripcion}* — ${etiqueta} (${fmt(best.precioUnitario)})`);
+      resumen.push(`✅ ${cantidad} ${ex.unidad || best.unidad} *${best.descripcion}* — ${etiqueta} (${fmt(best.precioUnitario)})`);
     } else {
-      // No casó: ítem libre, fuera de APU
       items.push({
         descripcion: ex.descripcion,
-        cantidad: Number(ex.cantidad) || 1,
+        cantidad,
         unidad: ex.unidad || 'UND',
         codigo: '',
         itemApuId: null,
         itemApuInsumoId: null,
       });
-      resumen.push(`⚠️ ${ex.cantidad || 1} ${ex.unidad || ''} *${ex.descripcion}* — no está en el APU (requiere justificación)`);
+      resumen.push(`⚠️ ${cantidad} ${ex.unidad || ''} *${ex.descripcion}* — no está en el APU (requiere justificación)`);
     }
   }
+  return { items, resumen };
+};
 
-  // 3. Crear la requisición
+// Crea la requisición a partir de ítems ya extraídos. Reutilizable por el flujo
+// de lenguaje natural y por el agente IA (herramienta crear_requisicion).
+const createRequisitionFromItems = async (companyId, user, extracted, prioridad = 'MEDIA') => {
+  const project = await prisma.project.findFirst({ where: { companyId, activo: true } });
+  if (!project) {
+    return { ok: false, message: 'No hay un proyecto activo. Pide al director que active un proyecto antes de crear requisiciones.' };
+  }
+  if (!Array.isArray(extracted) || extracted.length === 0) {
+    return { ok: false, message: 'No identifiqué materiales para la requisición. Indícame qué necesitas y cuánto.' };
+  }
+
+  const { items, resumen } = await matchExtractedItems(companyId, extracted);
+  const prio = ['ALTA', 'MEDIA', 'BAJA'].includes(prioridad) ? prioridad : 'MEDIA';
+
   try {
     const req = await requisitionsService.createRequisition(companyId, user.id, {
       projectId: project.id,
       items,
-      prioridad,
+      prioridad: prio,
       canal: 'WHATSAPP',
     });
     const fueraApu = items.filter((i) => !i.itemApuId).length;
-    return (
+    const message =
       `📋 *Requisición ${req.consecutivo} creada*\n\n` +
       `${resumen.join('\n')}\n\n` +
       `Estado: *${req.estado.replace(/_/g, ' ')}*` +
       (fueraApu > 0
         ? `\n\n⚠️ ${fueraApu} ítem(s) fuera del APU. El director debe justificarlos antes de aprobar.`
-        : `\n\n✅ Todos los ítems están en el presupuesto. Pendiente de aprobación del director.`)
-    );
+        : `\n\n✅ Todos los ítems están en el presupuesto. Pendiente de aprobación del director.`);
+    return { ok: true, message, consecutivo: req.consecutivo };
   } catch (err) {
     logger.error('[bot.context] Error creando requisición:', err.message);
-    return `No pude crear la requisición: ${err.message}`;
+    return { ok: false, message: `No pude crear la requisición: ${err.message}` };
   }
 };
 
@@ -630,21 +750,33 @@ Si el mensaje NO es una solicitud de materiales, responde {"items":[]}.`,
 
 const buildResponse = async (text, companyId, user) => {
   const rol = typeof user === 'string' ? user : user?.rol;
+  const userId = typeof user === 'object' ? user?.id : null;
   const t = text.toLowerCase().trim();
 
-  // 1. Comandos exactos / consultas
+  // 1. Comandos exactos / consultas rápidas y deterministas.
   const commandResult = await handleCommand(t, companyId, rol);
   if (commandResult !== null) return commandResult;
 
-  // 2. Intención de crear requisición (solo usuarios internos con id)
-  const userId = typeof user === 'object' ? user?.id : null;
-  if (userId && REQ_INTENT_RE.test(t)) {
-    const reqResult = await tryCreateRequisition(text, companyId, { id: userId, rol });
-    if (reqResult !== null) return reqResult;
+  // 2. Usuarios internos → agente IA (consulta y ejecuta acciones).
+  if (userId) {
+    try {
+      const { runAgent } = require('./bot.agent');
+      const reply = await runAgent(text, companyId, { id: userId, rol });
+      if (reply) return reply;
+    } catch (err) {
+      logger.error('[bot.context] Error en agente IA:', err.message);
+    }
   }
 
-  // 3. Fallback IA
+  // 3. Fallback IA conversacional.
   return groqFallback(text, companyId, { rol });
 };
 
-module.exports = { buildResponse, buildDbContext, handleSupplierMessage };
+module.exports = {
+  buildResponse,
+  buildDbContext,
+  handleSupplierMessage,
+  handleCommand,
+  groqFallback,
+  createRequisitionFromItems,
+};

@@ -148,13 +148,6 @@ export default function ProjectList() {
                     >
                       Dashboard
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => navigate(`/projects/${project.id}/budget`)}
-                    >
-                      📊 Presupuesto
-                    </Button>
                     {canEdit && (
                       <Button
                         size="sm"

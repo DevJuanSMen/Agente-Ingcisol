@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import api from '../api/client';
+import { useProjectStore } from './projectStore';
 
 // Carga los permisos del rol actual (matriz configurada por el director)
 const fetchPermissions = async (set) => {
@@ -22,6 +23,9 @@ export const useAuthStore = create(
 
       login: async (email, password) => {
         const { data } = await api.post('/auth/login', { email, password });
+        // Descartar cualquier proyecto persistido de una sesión anterior antes
+        // de cargar los del usuario que entra (evita el "parpadeo" por caché).
+        useProjectStore.getState().reset();
         set({
           token: data.data.token,
           user: data.data.user,
@@ -38,12 +42,15 @@ export const useAuthStore = create(
           user: data.data.user,
           isAuthenticated: true,
         });
+        useProjectStore.getState().reset();
         await fetchPermissions(set);
         return data.data.user;
       },
 
       logout: () => {
         set({ user: null, token: null, isAuthenticated: false, permissions: {} });
+        // Limpiar el proyecto activo persistido para que la próxima sesión arranque limpia.
+        useProjectStore.getState().reset();
       },
 
       setUser: (user) => set({ user }),

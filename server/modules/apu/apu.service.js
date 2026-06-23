@@ -8,7 +8,21 @@ const getAPUTree = async (companyId) => {
 
   const items = await prisma.itemAPU.findMany({
     where: { projectId: activeProject.id },
-    include: { insumos: { orderBy: { createdAt: 'asc' } } },
+    include: {
+      insumos: {
+        orderBy: { createdAt: 'asc' },
+        // Si el insumo es un básico compuesto (ej. concreto), traemos su desglose
+        // (cemento, arena, gravilla) para poder requisicionar un sub-insumo.
+        include: {
+          basicPrice: {
+            select: {
+              id: true, descripcion: true, unidad: true, precioUnitario: true,
+              insumos: { orderBy: { createdAt: 'asc' } },
+            },
+          },
+        },
+      },
+    },
   });
 
   // Usar capitulo guardado, o inferir del primer segmento del código

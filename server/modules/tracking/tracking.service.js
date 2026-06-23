@@ -142,4 +142,38 @@ const getRequisitionsTracking = async (companyId) => {
   });
 };
 
-module.exports = { getTrackingBoard, getRequisitionsTracking, getSemaforo };
+// ── Confirmación de OC por parte del proveedor (vía WhatsApp) ─────────────────
+// tipo: 'CONFIRMAR' (acepta la OC y/o fija fecha de entrega) | 'ENTREGADO' (ya despachó).
+// Valida que la OC pertenezca a la empresa. Devuelve la OC actualizada y la previa.
+const confirmOrderFromSupplier = async (companyId, orderId, { tipo, fecha } = {}) => {
+  const order = await prisma.purchaseOrder.findUnique({
+    where: { id: orderId },
+    include: {
+      proveedor: { select: { nombre: true } },
+      quotation: {
+        include: { requisition: { select: { consecutivo: true, project: { select: { companyId: true, nombre: true } } } } },
+      },
+    },
+  });
+  if (!order || order.quotation.requisition.project.companyId !== companyId) {
+    throw Object.assign(new Error('Orden de compra no encontrada'), { statusCode: 404 });
+  }
+
+  const data = {};
+  if (tipo === 'ENTREGADO') {
+    data.estado = 'ENTREGADA';
+    data.fechaEntregaReal = new Date();
+  } else {
+    // CONFIRMAR: la OC fue aceptada por el proveedor y queda "en proceso".
+    if (order.estado === 'EMITIDA') data.estado = 'ENVIADA';
+    if (fecha) {
+      data.fechaEntregaPactada = fecha;
+      data.alertaEnviada = false; // re-armar la alerta de 48h con la nueva fecha
+    }
+  }
+
+  const updated = await prisma.purchaseOrder.update({ where: { id: orderId }, data });
+  return { order: { ...order, ...updated }, prev: order };
+};
+
+module.exports = { getTrackingBoard, getRequisitionsTracking, getSemaforo, confirmOrderFromSupplier };
