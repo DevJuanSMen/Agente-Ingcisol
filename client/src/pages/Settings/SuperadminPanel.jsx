@@ -32,12 +32,18 @@ export default function SuperadminPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Un bot está "activo" si está habilitado O tiene sesión/QR corriendo. En ese
+  // caso la acción es DETENERLO (aunque nunca se haya "activado"), para poder
+  // matar empresas fantasma que giran QR sin estar habilitadas.
+  const isActive = (c) =>
+    c.bot.enabled || c.bot.qrActivo || ['ready', 'authenticated', 'qr_waiting'].includes(c.bot.status);
+
   const toggleBot = async (c) => {
-    const disable = c.bot.enabled;
-    if (disable && !confirm(`¿Inhabilitar el bot de "${c.razonSocial}"? Se cerrará su sesión de WhatsApp.`)) return;
+    const stop = isActive(c);
+    if (stop && !confirm(`¿Inhabilitar/detener el bot de "${c.razonSocial}"? Se cerrará su sesión de WhatsApp y su QR.`)) return;
     setActing(c.id);
     try {
-      await api.post(`/admin/companies/${c.id}/bot/${disable ? 'disable' : 'enable'}`);
+      await api.post(`/admin/companies/${c.id}/bot/${stop ? 'disable' : 'enable'}`);
       await load();
     } catch (err) {
       alert(err.response?.data?.message || 'Error');
@@ -101,11 +107,11 @@ export default function SuperadminPanel() {
                       <td className="px-3 py-2.5 text-right">
                         <Button
                           size="sm"
-                          variant={c.bot.enabled ? 'danger' : 'secondary'}
+                          variant={isActive(c) ? 'danger' : 'secondary'}
                           loading={acting === c.id}
                           onClick={() => toggleBot(c)}
                         >
-                          {c.bot.enabled ? 'Inhabilitar bot' : 'Habilitar bot'}
+                          {isActive(c) ? 'Inhabilitar / detener' : 'Habilitar bot'}
                         </Button>
                       </td>
                     </tr>

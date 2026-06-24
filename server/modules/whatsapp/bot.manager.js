@@ -247,14 +247,18 @@ class BotManager {
     const timer = this.retryTimers.get(companyId);
     if (timer) { clearTimeout(timer); this.retryTimers.delete(companyId); }
     this._clearQrTimer(companyId);
+    const k = this._keys(companyId);
 
     const client = this.clients.get(companyId);
-    if (!client) return;
-
-    try { await client.destroy(); } catch {}
+    if (client) {
+      try { await client.destroy(); } catch {}
+    }
     this.ready.delete(companyId);
     this.clients.delete(companyId);
-    await redis.set(this._keys(companyId).status, 'disconnected');
+    // Limpiar QR y estado aunque no hubiera cliente vivo en este worker, para que
+    // el panel superadmin refleje el cambio de inmediato.
+    await redis.del(k.qr);
+    await redis.set(k.status, 'disconnected');
     logger.info(`[bot:${companyId}] Destruido`);
   }
 
