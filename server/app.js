@@ -22,6 +22,8 @@ const whatsappRouter = require('./modules/whatsapp/whatsapp.router');
 const assistantRouter = require('./modules/assistant/assistant.router');
 const masterImportRouter = require('./modules/masterimport/masterimport.router');
 const permissionsRouter = require('./modules/permissions/permissions.router');
+const adminRouter = require('./modules/admin/admin.router');
+const { ensureSuperadmin } = require('./shared/ensureSuperadmin');
 
 const app = express();
 
@@ -61,6 +63,7 @@ app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/assistant', assistantRouter);
 app.use('/api/master-import', masterImportRouter);
 app.use('/api/permissions', permissionsRouter);
+app.use('/api/admin', adminRouter);
 
 // Handler de errores global
 app.use((err, req, res, next) => {
@@ -84,6 +87,8 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   logger.info(`API PROCURA AI corriendo en puerto ${PORT}`);
+  // Asegura el superadmin de plataforma (si hay credenciales en el entorno)
+  ensureSuperadmin();
 });
 
 module.exports = app;

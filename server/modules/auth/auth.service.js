@@ -21,6 +21,7 @@ const signToken = (user) =>
       rol: user.rol,
       companyId: user.companyId,
       topeAprobacion: user.topeAprobacion?.toString(),
+      esSuperadmin: !!user.esSuperadmin,
     },
     process.env.JWT_SECRET,
     { expiresIn: EXPIRES_IN }

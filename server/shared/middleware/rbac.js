@@ -40,4 +40,12 @@ const requirePermission = (modulo, accion = 'ver') => async (req, res, next) => 
   }
 };
 
-module.exports = { requireRole, requireTope, requirePermission };
+// Solo superadmin de plataforma (acceso cruzado a todas las empresas)
+const requireSuperadmin = (req, res, next) => {
+  if (!req.user?.esSuperadmin) {
+    return forbidden(res, 'Acceso restringido al superadmin de la plataforma');
+  }
+  next();
+};
+
+module.exports = { requireRole, requireTope, requirePermission, requireSuperadmin };

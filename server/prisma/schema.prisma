@@ -139,6 +139,7 @@ model User {
   rol            Rol
   topeAprobacion Decimal  @default(0) @db.Decimal(15, 2)
   activo         Boolean  @default(true)
+  esSuperadmin   Boolean  @default(false) // acceso cruzado a todas las empresas (panel plataforma)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

@@ -12,21 +12,28 @@ const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone'
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
 const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
+// Nota: NO usar '--single-process' / '--no-zygote'. Con whatsapp-web.js provocan
+// "Execution context was destroyed" y que la sesión nunca complete el handshake
+// (el QR se regenera en bucle sin conectar). Más estable sin ellos.
 const PUPPETEER_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
   '--disable-gpu',
   '--no-first-run',
-  '--single-process',
-  '--no-zygote',
 ];
 
 class BotManager {
   constructor() {
     this.clients = new Map(); // companyId -> Client
     this.retryTimers = new Map(); // companyId -> Timer
+    this.qrTimers = new Map(); // companyId -> Timer (ventana de emparejamiento QR)
     this.ready = new Set(); // companyIds con el store de WhatsApp Web ya inyectado
+  }
+
+  _clearQrTimer(companyId) {
+    const t = this.qrTimers.get(companyId);
+    if (t) { clearTimeout(t); this.qrTimers.delete(companyId); }
   }
 
   // ¿El cliente está realmente listo para enviar? Tener el Client en el mapa no
@@ -60,12 +67,17 @@ class BotManager {
   }
 
   // Programa un único reintento de reconexión (evita timers duplicados y no
-  // reintenta si la empresa deshabilitó el bot).
+  // reintenta si la empresa deshabilitó el bot o si no tiene sesión guardada
+  // —en ese caso requiere QR manual, no se debe generar QR automáticamente—).
   async _scheduleReconnect(companyId, delayMs = 30_000) {
     if (this.retryTimers.has(companyId)) return;
     const enabled = await redis.get(this._keys(companyId).enabled);
     if (enabled !== '1') {
       logger.info(`[bot:${companyId}] Bot deshabilitado; no se reconecta`);
+      return;
+    }
+    if (!this._hasSession(companyId)) {
+      logger.info(`[bot:${companyId}] Sin sesión guardada; no se reconecta solo (requiere QR manual).`);
       return;
     }
     const timer = setTimeout(() => {
@@ -94,21 +106,40 @@ class BotManager {
       logger.info(`[bot:${companyId}] QR generado`);
       try {
         const dataUrl = await qrcode.toDataURL(qr);
-        await redis.set(k.qr, dataUrl, 'EX', 120);
+        await redis.set(k.qr, dataUrl, 'EX', 130);
         await redis.set(k.status, 'qr_waiting');
       } catch (err) {
         logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
+      }
+
+      // Ventana de emparejamiento: el QR rota mientras nadie escanea. Para no
+      // generarlo indefinidamente, si nadie escanea en 2 min cerramos la sesión.
+      // El usuario vuelve a pulsar "Generar QR" cuando esté listo.
+      if (!this.qrTimers.has(companyId)) {
+        const t = setTimeout(async () => {
+          this.qrTimers.delete(companyId);
+          if (this.ready.has(companyId)) return; // ya conectó
+          logger.warn(`[bot:${companyId}] QR no escaneado a tiempo; se cierra la sesión de emparejamiento.`);
+          try { await client.destroy(); } catch {}
+          this.ready.delete(companyId);
+          this.clients.delete(companyId);
+          await redis.del(k.qr);
+          await redis.set(k.status, 'disconnected');
+        }, 120_000);
+        this.qrTimers.set(companyId, t);
       }
     });
 
     client.on('authenticated', async () => {
       logger.info(`[bot:${companyId}] Autenticado`);
+      this._clearQrTimer(companyId);
       await redis.del(k.qr);
       await redis.set(k.status, 'authenticated');
     });
 
     client.on('ready', async () => {
       logger.info(`[bot:${companyId}] Listo`);
+      this._clearQrTimer(companyId);
       this.ready.add(companyId);
       await redis.set(k.status, 'ready');
     });
@@ -117,6 +148,7 @@ class BotManager {
       logger.warn(`[bot:${companyId}] Desconectado: ${reason}`);
       this.ready.delete(companyId);
       this.clients.delete(companyId);
+      this._clearQrTimer(companyId);
       await redis.set(k.status, 'disconnected');
 
       // Cerrar el navegador del cliente caído: si no, queda un proceso zombie y
@@ -124,12 +156,12 @@ class BotManager {
       try { await client.destroy(); } catch {}
 
       // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
-      // credenciales ya no sirven: hay que limpiarlas para re-vincular con QR.
+      // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
+      // deberá pulsar "Generar QR para conectar" cuando quiera re-vincular.
       if (reason === 'LOGOUT') {
         this._clearSession(companyId);
         await redis.del(k.qr);
-        await redis.set(k.status, 'qr_waiting');
-        logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Se requiere re-escanear el QR.`);
+        logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
       }
 
       await this._scheduleReconnect(companyId);
@@ -214,6 +246,7 @@ class BotManager {
   async destroyCompany(companyId) {
     const timer = this.retryTimers.get(companyId);
     if (timer) { clearTimeout(timer); this.retryTimers.delete(companyId); }
+    this._clearQrTimer(companyId);
 
     const client = this.clients.get(companyId);
     if (!client) return;
@@ -247,16 +280,38 @@ class BotManager {
     });
   }
 
-  // Re-inicializa todos los bots activos al arrancar el worker
+  // ¿Existe una sesión ya guardada (empresa vinculada antes)?
+  _hasSession(companyId) {
+    const dir = path.join(AUTH_BASE, `session-${companyId}`);
+    try {
+      return fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // Re-inicializa al arrancar el worker SOLO las empresas que ya tienen sesión
+  // vinculada. Una empresa "enabled" pero sin sesión (nunca escaneó el QR) NO se
+  // revive: si no, lanza un Chromium que gira QR para siempre y satura el worker.
+  // Quien quiera vincular una empresa nueva lo hace desde el panel (Conectar).
   async restoreActiveSessions() {
     const keys = await redis.keys('whatsapp:*:enabled');
+    let restored = 0;
     for (const key of keys) {
       const val = await redis.get(key);
       if (val !== '1') continue;
       const companyId = key.split(':')[1];
+      if (!this._hasSession(companyId)) {
+        logger.warn(`[bot] ${companyId} habilitado pero sin sesión guardada; no se restaura (vincúlalo desde el panel).`);
+        continue;
+      }
       logger.info(`[bot] Restaurando sesión para empresa ${companyId}`);
       await this.initCompany(companyId);
+      restored += 1;
+      // Escalonar: no lanzar varios Chromium en el mismo instante.
+      await new Promise((r) => setTimeout(r, 4000));
     }
+    logger.info(`[bot] Sesiones restauradas: ${restored}`);
   }
 }
 

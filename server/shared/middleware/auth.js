@@ -16,6 +16,7 @@ const verifyToken = (req, res, next) => {
       rol: payload.rol,
       companyId: payload.companyId,
       topeAprobacion: payload.topeAprobacion,
+      esSuperadmin: !!payload.esSuperadmin,
     };
     next();
   } catch (err) {

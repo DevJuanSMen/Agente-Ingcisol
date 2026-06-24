@@ -6,6 +6,7 @@ import { useProjectStore } from '../../store/projectStore';
 // Cada ruta se mapea a su módulo de permisos (mod). Visible si el rol tiene `ver`.
 // Las que no llevan `mod` son siempre visibles; `directorOnly` solo para director.
 const ALL_ROUTES = [
+  { path: '/admin', label: 'Superadmin', icon: '⚙️', superadminOnly: true },
   { path: '/', label: 'Dashboard', icon: '📊' },
   { path: '/projects', label: 'Proyectos', icon: '🏗️', mod: 'projects' },
   { path: '/delegations', label: 'Delegaciones', icon: '🤝', mod: 'delegations' },
@@ -109,6 +110,7 @@ export default function Sidebar({ open, onClose }) {
 
   const isDirector = user?.rol === 'DIRECTOR';
   const routeVisible = (r) => {
+    if (r.superadminOnly) return !!user?.esSuperadmin;
     if (r.directorOnly) return isDirector;
     if (r.mod) return isDirector || !!permissions?.[r.mod]?.ver;
     return true; // sin módulo → siempre visible (Dashboard)

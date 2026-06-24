@@ -115,9 +115,9 @@ export default function WhatsAppBot() {
 
           {/* Botones de conexión */}
           <div className="flex gap-2">
-            {!isConnected && (
+            {!isConnected && state.status !== 'qr_waiting' && (
               <Button onClick={handleConnect} loading={connecting} size="sm">
-                📱 Conectar WhatsApp
+                📱 Generar QR para conectar
               </Button>
             )}
             {isConnected && (
@@ -137,7 +137,9 @@ export default function WhatsAppBot() {
               <div className="inline-block p-3 bg-white border-2 border-slate-200 rounded-xl shadow-sm">
                 <img src={state.qr} alt="QR WhatsApp" className="w-52 h-52" />
               </div>
-              <p className="text-xs text-slate-400">El QR expira en 2 minutos. Se actualiza automáticamente.</p>
+              <p className="text-xs text-slate-400">
+                Tienes ~2 minutos para escanear. Si no lo haces, se cierra y deberás volver a generarlo.
+              </p>
             </div>
           )}
 
@@ -159,7 +161,7 @@ export default function WhatsAppBot() {
               <div>
                 <p className="text-sm font-medium text-slate-700">Sin conexión WhatsApp</p>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Haz clic en "Conectar WhatsApp" para iniciar la sesión de tu empresa.
+                  Pulsa "Generar QR para conectar" para vincular el WhatsApp de tu empresa. El QR solo se genera cuando lo pides.
                 </p>
               </div>
             </div>

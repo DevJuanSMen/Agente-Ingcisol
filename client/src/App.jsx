@@ -28,6 +28,7 @@ import CompanyProfile from './pages/Company/CompanyProfile';
 import UsersSettings from './pages/Settings/UsersSettings';
 import PermissionsSettings from './pages/Settings/PermissionsSettings';
 import WhatsAppBot from './pages/Settings/WhatsAppBot';
+import SuperadminPanel from './pages/Settings/SuperadminPanel';
 
 function ProtectedRoute({ children }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -76,6 +77,7 @@ export default function App() {
           <Route path="settings/users" element={<UsersSettings />} />
           <Route path="settings/permissions" element={<PermissionsSettings />} />
           <Route path="settings/whatsapp" element={<WhatsAppBot />} />
+          <Route path="admin" element={<SuperadminPanel />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
