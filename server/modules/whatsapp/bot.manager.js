@@ -27,13 +27,36 @@ class BotManager {
   constructor() {
     this.clients = new Map(); // companyId -> Client
     this.retryTimers = new Map(); // companyId -> Timer
-    this.qrTimers = new Map(); // companyId -> Timer (ventana de emparejamiento QR)
+    this.qrTimers = new Map(); // companyId -> Timer (ventana de emparejamiento)
     this.ready = new Set(); // companyIds con el store de WhatsApp Web ya inyectado
+    this.pairing = new Map(); // companyId -> { mode, phone, requested } (vinculación en curso)
   }
 
   _clearQrTimer(companyId) {
     const t = this.qrTimers.get(companyId);
     if (t) { clearTimeout(t); this.qrTimers.delete(companyId); }
+  }
+
+  // Ventana de seguridad para vincular (QR o código). NO es para apurar al
+  // usuario: es solo para no dejar un Chromium girando indefinidamente si la
+  // pestaña fue abandonada. Es generosa (10 min) y se rearma sin reiniciar:
+  // mientras el usuario esté vinculando, sigue vivo. Si conecta, se cancela.
+  _armPairingTimeout(companyId, client) {
+    if (this.qrTimers.has(companyId)) return;
+    const k = this._keys(companyId);
+    const t = setTimeout(async () => {
+      this.qrTimers.delete(companyId);
+      if (this.ready.has(companyId)) return; // ya conectó
+      logger.warn(`[bot:${companyId}] Vinculación no completada en 10 min; se cierra la sesión de emparejamiento.`);
+      try { await client.destroy(); } catch {}
+      this.ready.delete(companyId);
+      this.clients.delete(companyId);
+      this.pairing.delete(companyId);
+      await redis.del(k.qr);
+      await redis.del(k.pairingCode);
+      await redis.set(k.status, 'disconnected');
+    }, 600_000);
+    this.qrTimers.set(companyId, t);
   }
 
   // ¿El cliente está realmente listo para enviar? Tener el Client en el mapa no
@@ -45,6 +68,7 @@ class BotManager {
   _keys(companyId) {
     return {
       qr: `whatsapp:${companyId}:qr`,
+      pairingCode: `whatsapp:${companyId}:pairingCode`,
       status: `whatsapp:${companyId}:status`,
       enabled: `whatsapp:${companyId}:enabled`,
     };
@@ -88,7 +112,11 @@ class BotManager {
     this.retryTimers.set(companyId, timer);
   }
 
-  async initCompany(companyId) {
+  // opts: { mode: 'qr' | 'pairing', phone?: string }
+  //  - 'qr'      → escanear código QR (clásico).
+  //  - 'pairing' → código de 8 dígitos que el usuario escribe en WhatsApp
+  //                (Dispositivos vinculados → Vincular con número de teléfono).
+  async initCompany(companyId, opts = {}) {
     if (this.clients.has(companyId)) {
       logger.info(`[bot:${companyId}] Cliente ya activo`);
       return;
@@ -97,50 +125,73 @@ class BotManager {
     this._clearLocks(companyId);
     const k = this._keys(companyId);
 
+    const mode = opts.mode === 'pairing' ? 'pairing' : 'qr';
+    const phone = opts.phone ? String(opts.phone).replace(/\D/g, '') : null;
+    // Si pidieron emparejamiento pero no hay teléfono válido, caemos a QR.
+    const pairingMode = mode === 'pairing' && phone && phone.length >= 10;
+    this.pairing.set(companyId, { mode: pairingMode ? 'pairing' : 'qr', phone, requested: false });
+
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: companyId, dataPath: AUTH_BASE }),
       puppeteer: { executablePath: CHROMIUM, args: PUPPETEER_ARGS },
     });
 
     client.on('qr', async (qr) => {
+      const pairing = this.pairing.get(companyId) || {};
+
+      // ── Modo código de emparejamiento ──────────────────────────────────────
+      // El evento 'qr' indica que la página de WhatsApp Web ya está lista para
+      // vincular; aprovechamos para pedir el código UNA sola vez (si lo pedimos
+      // en cada rotación, el código cambiaría constantemente y confunde).
+      if (pairing.mode === 'pairing' && pairing.phone && !pairing.requested) {
+        pairing.requested = true;
+        this.pairing.set(companyId, pairing);
+        try {
+          const code = await client.requestPairingCode(pairing.phone);
+          await redis.set(k.pairingCode, code, 'EX', 600);
+          await redis.del(k.qr);
+          await redis.set(k.status, 'pairing_waiting');
+          logger.info(`[bot:${companyId}] Código de emparejamiento generado`);
+        } catch (err) {
+          logger.error(`[bot:${companyId}] Error generando código de emparejamiento: ${err.message}. Se usa QR.`);
+          pairing.mode = 'qr'; // fallback a QR en la próxima rotación
+          this.pairing.set(companyId, pairing);
+        }
+        this._armPairingTimeout(companyId, client);
+        return;
+      }
+      if (pairing.mode === 'pairing' && pairing.requested) {
+        // Código ya emitido; ignoramos las rotaciones de QR para no pisar el código.
+        return;
+      }
+
+      // ── Modo QR ────────────────────────────────────────────────────────────
       logger.info(`[bot:${companyId}] QR generado`);
       try {
         const dataUrl = await qrcode.toDataURL(qr);
-        await redis.set(k.qr, dataUrl, 'EX', 130);
+        await redis.set(k.qr, dataUrl, 'EX', 180);
         await redis.set(k.status, 'qr_waiting');
       } catch (err) {
         logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
       }
-
-      // Ventana de emparejamiento: el QR rota mientras nadie escanea. Para no
-      // generarlo indefinidamente, si nadie escanea en 2 min cerramos la sesión.
-      // El usuario vuelve a pulsar "Generar QR" cuando esté listo.
-      if (!this.qrTimers.has(companyId)) {
-        const t = setTimeout(async () => {
-          this.qrTimers.delete(companyId);
-          if (this.ready.has(companyId)) return; // ya conectó
-          logger.warn(`[bot:${companyId}] QR no escaneado a tiempo; se cierra la sesión de emparejamiento.`);
-          try { await client.destroy(); } catch {}
-          this.ready.delete(companyId);
-          this.clients.delete(companyId);
-          await redis.del(k.qr);
-          await redis.set(k.status, 'disconnected');
-        }, 120_000);
-        this.qrTimers.set(companyId, t);
-      }
+      this._armPairingTimeout(companyId, client);
     });
 
     client.on('authenticated', async () => {
       logger.info(`[bot:${companyId}] Autenticado`);
       this._clearQrTimer(companyId);
       await redis.del(k.qr);
+      await redis.del(k.pairingCode);
       await redis.set(k.status, 'authenticated');
     });
 
     client.on('ready', async () => {
       logger.info(`[bot:${companyId}] Listo`);
       this._clearQrTimer(companyId);
+      this.pairing.delete(companyId);
       this.ready.add(companyId);
+      await redis.del(k.qr);
+      await redis.del(k.pairingCode);
       await redis.set(k.status, 'ready');
     });
 
@@ -148,7 +199,9 @@ class BotManager {
       logger.warn(`[bot:${companyId}] Desconectado: ${reason}`);
       this.ready.delete(companyId);
       this.clients.delete(companyId);
+      this.pairing.delete(companyId);
       this._clearQrTimer(companyId);
+      await redis.del(k.pairingCode);
       await redis.set(k.status, 'disconnected');
 
       // Cerrar el navegador del cliente caído: si no, queda un proceso zombie y
@@ -235,6 +288,7 @@ class BotManager {
       logger.error(`[bot:${companyId}] Error al inicializar: ${err.message}`);
       this.ready.delete(companyId);
       this.clients.delete(companyId);
+      this.pairing.delete(companyId);
       await redis.set(k.status, 'error');
       // Cerrar lo que haya quedado a medias y reintentar de forma controlada.
       try { await client.destroy(); } catch {}
@@ -255,9 +309,11 @@ class BotManager {
     }
     this.ready.delete(companyId);
     this.clients.delete(companyId);
+    this.pairing.delete(companyId);
     // Limpiar QR y estado aunque no hubiera cliente vivo en este worker, para que
     // el panel superadmin refleje el cambio de inmediato.
     await redis.del(k.qr);
+    await redis.del(k.pairingCode);
     await redis.set(k.status, 'disconnected');
     logger.info(`[bot:${companyId}] Destruido`);
   }

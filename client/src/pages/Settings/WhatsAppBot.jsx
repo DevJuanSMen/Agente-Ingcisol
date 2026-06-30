@@ -6,6 +6,7 @@ import Button from '../../components/ui/Button';
 const STATUS_LABEL = {
   disconnected: { text: 'Desconectado', color: 'text-slate-500', dot: 'bg-slate-400' },
   qr_waiting:   { text: 'Esperando escaneo QR', color: 'text-amber-500', dot: 'bg-amber-400 animate-pulse' },
+  pairing_waiting: { text: 'Esperando código de vinculación', color: 'text-amber-500', dot: 'bg-amber-400 animate-pulse' },
   authenticated: { text: 'Autenticado', color: 'text-blue-500', dot: 'bg-blue-500' },
   ready:         { text: 'Conectado y listo', color: 'text-green-600', dot: 'bg-green-500' },
   error:         { text: 'Error de conexión', color: 'text-red-600', dot: 'bg-red-500' },
@@ -27,10 +28,11 @@ const COMMANDS = [
 ];
 
 export default function WhatsAppBot() {
-  const [state, setState] = useState({ enabled: false, status: 'disconnected', qr: null });
+  const [state, setState] = useState({ enabled: false, status: 'disconnected', qr: null, pairingCode: null });
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [phone, setPhone] = useState('');
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -45,18 +47,29 @@ export default function WhatsAppBot() {
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
-  // Polling mientras espera QR o autenticación
+  // Polling mientras espera vinculación (QR, código o autenticación). Cada 3s
+  // para que el QR/código mostrados estén siempre frescos.
   useEffect(() => {
-    if (!['qr_waiting', 'authenticated'].includes(state.status)) return;
-    const interval = setInterval(fetchStatus, 4000);
+    if (!['qr_waiting', 'pairing_waiting', 'authenticated'].includes(state.status)) return;
+    const interval = setInterval(fetchStatus, 3000);
     return () => clearInterval(interval);
   }, [state.status, fetchStatus]);
 
-  const handleConnect = async () => {
+  // mode: 'pairing' (código de 8 dígitos) | 'qr' (escanear)
+  const handleConnect = async (mode) => {
+    if (mode === 'pairing') {
+      const digits = (phone || '').replace(/\D/g, '');
+      if (digits.length < 10) {
+        alert('Escribe el número de WhatsApp de la empresa con indicativo de país. Ej: 573001234567');
+        return;
+      }
+    }
     setConnecting(true);
     try {
-      await api.post('/whatsapp/connect');
-      // Empezar a pollear para el QR
+      const body = mode === 'pairing'
+        ? { mode: 'pairing', phone: (phone || '').replace(/\D/g, '') }
+        : { mode: 'qr' };
+      await api.post('/whatsapp/connect', body);
       setTimeout(fetchStatus, 3000);
     } catch (err) {
       alert(err.response?.data?.message || 'Error al conectar');
@@ -86,7 +99,7 @@ export default function WhatsAppBot() {
 
   const s = STATUS_LABEL[state.status] || STATUS_LABEL.disconnected;
   const isConnected = state.status === 'ready';
-  const isConnecting = ['qr_waiting', 'authenticated', 'disconnected'].includes(state.status) && connecting;
+  const isWaiting = ['qr_waiting', 'pairing_waiting', 'authenticated'].includes(state.status);
 
   return (
     <div className="space-y-5 max-w-xl">
@@ -113,11 +126,43 @@ export default function WhatsAppBot() {
             </Button>
           </div>
 
-          {/* Botones de conexión */}
+          {/* Conexión: código de emparejamiento (recomendado) o QR */}
+          {!isConnected && !isWaiting && (
+            <div className="space-y-4">
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                <p className="text-sm font-semibold text-slate-800">Opción recomendada: vincular con código</p>
+                <p className="text-xs text-slate-500 -mt-1">
+                  Más fácil que el QR: WhatsApp te pide un código de 8 dígitos y lo escribes en tu teléfono.
+                </p>
+                <label className="block text-xs font-medium text-slate-600">
+                  Número de WhatsApp de la empresa (con indicativo de país)
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="Ej: 573001234567"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/40"
+                />
+                <Button onClick={() => handleConnect('pairing')} loading={connecting} size="sm">
+                  🔑 Vincular con código
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">¿Prefieres escanear?</span>
+                <Button onClick={() => handleConnect('qr')} loading={connecting} variant="ghost" size="sm">
+                  📷 Generar QR
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Acciones mientras espera / conectado */}
           <div className="flex gap-2">
-            {!isConnected && state.status !== 'qr_waiting' && (
-              <Button onClick={handleConnect} loading={connecting} size="sm">
-                📱 Generar QR para conectar
+            {isWaiting && (
+              <Button onClick={handleDisconnect} variant="ghost" size="sm">
+                Cancelar
               </Button>
             )}
             {isConnected && (
@@ -126,6 +171,26 @@ export default function WhatsAppBot() {
               </Button>
             )}
           </div>
+
+          {/* Código de emparejamiento */}
+          {state.status === 'pairing_waiting' && state.pairingCode && (
+            <div className="text-center space-y-3 py-2">
+              <p className="text-sm font-semibold text-slate-700">Escribe este código en WhatsApp</p>
+              <div className="inline-block px-6 py-4 bg-white border-2 border-primary/30 rounded-xl shadow-sm">
+                <span className="text-3xl font-mono font-bold tracking-[0.3em] text-primary">
+                  {state.pairingCode}
+                </span>
+              </div>
+              <div className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto text-left bg-slate-50 rounded-lg p-3 border border-slate-200">
+                <p className="font-semibold text-slate-700 mb-1">En el teléfono de la empresa:</p>
+                1. Abre <strong>WhatsApp</strong><br />
+                2. <strong>Ajustes → Dispositivos vinculados</strong><br />
+                3. <strong>Vincular dispositivo</strong> → <strong>Vincular con número de teléfono</strong><br />
+                4. Escribe el código de arriba
+              </div>
+              <p className="text-xs text-slate-400">El código es válido unos minutos. Si vence, pulsa "Cancelar" y genera uno nuevo.</p>
+            </div>
+          )}
 
           {/* QR Code */}
           {state.status === 'qr_waiting' && state.qr && (
@@ -137,9 +202,7 @@ export default function WhatsAppBot() {
               <div className="inline-block p-3 bg-white border-2 border-slate-200 rounded-xl shadow-sm">
                 <img src={state.qr} alt="QR WhatsApp" className="w-52 h-52" />
               </div>
-              <p className="text-xs text-slate-400">
-                Tienes ~2 minutos para escanear. Si no lo haces, se cierra y deberás volver a generarlo.
-              </p>
+              <p className="text-xs text-slate-400">El QR se renueva solo. Mantén esta ventana abierta mientras escaneas.</p>
             </div>
           )}
 
@@ -150,18 +213,6 @@ export default function WhatsAppBot() {
                 <p className="text-sm font-semibold text-green-800">WhatsApp conectado</p>
                 <p className="text-xs text-green-600 mt-0.5">
                   El bot responde a los usuarios y proveedores registrados en tu empresa.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {state.status === 'disconnected' && !connecting && (
-            <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
-              <span className="text-2xl">📱</span>
-              <div>
-                <p className="text-sm font-medium text-slate-700">Sin conexión WhatsApp</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Pulsa "Generar QR para conectar" para vincular el WhatsApp de tu empresa. El QR solo se genera cuando lo pides.
                 </p>
               </div>
             </div>

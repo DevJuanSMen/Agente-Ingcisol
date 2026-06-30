@@ -30,7 +30,7 @@ subscribeToCommands(async (cmd) => {
   logger.info('[worker] Comando recibido:', cmd);
   try {
     if (cmd.action === 'init') {
-      await botManager.initCompany(cmd.companyId);
+      await botManager.initCompany(cmd.companyId, { mode: cmd.mode, phone: cmd.phone });
     } else if (cmd.action === 'destroy') {
       await botManager.destroyCompany(cmd.companyId);
     } else if (cmd.action === 'send_quote_requests') {

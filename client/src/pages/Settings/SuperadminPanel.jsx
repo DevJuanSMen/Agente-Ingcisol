@@ -7,6 +7,7 @@ const BOT_BADGE = {
   ready:        { label: '🟢 Conectado', cls: 'bg-green-100 text-green-700' },
   authenticated:{ label: '🔵 Autenticado', cls: 'bg-blue-100 text-blue-700' },
   qr_waiting:   { label: '🟡 QR activo', cls: 'bg-amber-100 text-amber-700' },
+  pairing_waiting: { label: '🟡 Código activo', cls: 'bg-amber-100 text-amber-700' },
   error:        { label: '🔴 Error', cls: 'bg-red-100 text-red-700' },
   disconnected: { label: '⚪ Desconectado', cls: 'bg-slate-100 text-slate-500' },
 };
@@ -36,7 +37,7 @@ export default function SuperadminPanel() {
   // caso la acción es DETENERLO (aunque nunca se haya "activado"), para poder
   // matar empresas fantasma que giran QR sin estar habilitadas.
   const isActive = (c) =>
-    c.bot.enabled || c.bot.qrActivo || ['ready', 'authenticated', 'qr_waiting'].includes(c.bot.status);
+    c.bot.enabled || c.bot.qrActivo || ['ready', 'authenticated', 'qr_waiting', 'pairing_waiting'].includes(c.bot.status);
 
   const toggleBot = async (c) => {
     const stop = isActive(c);
