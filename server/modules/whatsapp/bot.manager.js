@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const pino = require('pino');
+const {
+  makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  Browsers,
+  fetchLatestBaileysVersion,
+} = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const { logger } = require('../../shared/utils/logger');
 const redis = require('../../shared/redis');
@@ -9,65 +16,42 @@ const { buildResponse, handleSupplierMessage } = require('./bot.context');
 const botFlows = require('./bot.flows');
 const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone');
 
+// Sesiones de Baileys (multi-file auth). Son de KB (no perfiles de Chromium),
+// así que el volumen de Railway ya no se llena. Reutilizamos la misma variable de
+// entorno para no cambiar el mount del volumen; los datos nuevos van a
+// subcarpetas baileys-<companyId> (conviven con las viejas session-<id> de
+// whatsapp-web.js, que ya no se usan y pueden borrarse a mano).
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
-const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-// NO fijar webVersion. Se probó pinnear una versión del repo wa-version cuando
-// creíamos que "Execution context was destroyed" era incompatibilidad de versión,
-// pero la causa real era el DISCO LLENO (ver _pruneChromiumCache). Con la versión
-// forzada, la vinculación funcionaba pero client.sendMessage se COLGABA
-// ("Runtime.callFunctionOn timed out") porque el store inyectado por
-// whatsapp-web.js no coincidía con la versión de WhatsApp Web forzada. Dejar que
-// la librería use su versión compatible por defecto. Solo pinnear (vía
-// WWEBJS_WEB_VERSION) si vuelve un fallo de inyección REAL y ya se descartó disco.
-const WEB_VERSION = process.env.WWEBJS_WEB_VERSION || null;
+// Baileys exige un logger tipo pino; lo silenciamos (usamos el logger propio).
+const waLogger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
 
-// Nota: NO usar '--single-process' / '--no-zygote'. Con whatsapp-web.js provocan
-// "Execution context was destroyed" y que la sesión nunca complete el handshake
-// (el QR se regenera en bucle sin conectar). Más estable sin ellos.
-const PUPPETEER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-gpu',
-  '--no-first-run',
-  // Reducen consumo de memoria/CPU en contenedores chicos (Railway). Sin esto,
-  // varios Chromium a la vez saturan el contenedor y el kernel mata la pestaña
-  // en pleno inject → "Execution context was destroyed" / protocol timeout.
-  '--disable-extensions',
-  '--disable-background-networking',
-  '--disable-background-timer-throttling',
-  '--disable-backgrounding-occluded-windows',
-  '--disable-renderer-backgrounding',
-  '--disable-accelerated-2d-canvas',
-  '--mute-audio',
-  // Cap la caché en disco para que Chromium no vuelva a llenar el volumen.
-  '--disk-cache-size=5242880', // 5 MB
-  '--media-cache-size=5242880',
-  // El actualizador de componentes de Chromium descarga ~110 MB de cosas
-  // INÚTILES para WhatsApp (WidevineCdm/DRM, WasmTtsEngine/texto-a-voz,
-  // OnDeviceHeadSuggestModel, component_crx_cache...) en el perfil = volumen.
-  // Apagarlo es lo que evita que el disco se vuelva a llenar.
-  '--disable-component-update',
-  '--disable-domain-reliability',
-  '--no-default-browser-check',
-  '--disable-client-side-phishing-detection',
-  '--disable-features=OptimizationGuideModelDownloading,OptimizationHints,OptimizationHintsFetching,MediaRouter,DialMediaRouteProvider,TranslateUI,Translate',
-];
+// JID de un número para enviar (individual). normalizeWhatsapp deja el número en
+// internacional sin símbolos (ej. 573001234567).
+const jidFor = (phone) => `${normalizeWhatsapp(phone)}@s.whatsapp.net`;
 
-// Timeout de las llamadas CDP (Runtime.callFunctionOn). El default de Puppeteer
-// es 180s; lo subimos porque el PRIMER envío tras vincular es lento (WhatsApp Web
-// aún sincroniza chats/contactos) y expiraba con "Runtime.callFunctionOn timed
-// out". Configurable por si hace falta más margen.
-const PROTOCOL_TIMEOUT = Number(process.env.WWEBJS_PROTOCOL_TIMEOUT || 240_000);
+// Extrae el texto de un mensaje entrante de Baileys (cubre los tipos comunes).
+const extractText = (msg) => {
+  const m = msg.message || {};
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.buttonsResponseMessage?.selectedDisplayText ||
+    m.listResponseMessage?.title ||
+    ''
+  );
+};
 
 class BotManager {
   constructor() {
-    this.clients = new Map(); // companyId -> Client
+    this.socks = new Map(); // companyId -> sock
     this.retryTimers = new Map(); // companyId -> Timer
     this.qrTimers = new Map(); // companyId -> Timer (ventana de emparejamiento)
-    this.ready = new Set(); // companyIds con el store de WhatsApp Web ya inyectado
-    this.pairing = new Map(); // companyId -> { mode, phone, requested } (vinculación en curso)
+    this.ready = new Set(); // companyIds conectados (connection === 'open')
+    this.pairing = new Map(); // companyId -> { mode, phone, requested }
+    this.stopping = new Set(); // companyIds que se están deteniendo a propósito
   }
 
   _clearQrTimer(companyId) {
@@ -75,20 +59,20 @@ class BotManager {
     if (t) { clearTimeout(t); this.qrTimers.delete(companyId); }
   }
 
-  // Ventana de seguridad para vincular (QR o código). NO es para apurar al
-  // usuario: es solo para no dejar un Chromium girando indefinidamente si la
-  // pestaña fue abandonada. Es generosa (10 min) y se rearma sin reiniciar:
-  // mientras el usuario esté vinculando, sigue vivo. Si conecta, se cancela.
-  _armPairingTimeout(companyId, client) {
+  // Ventana de seguridad para vincular (QR o código): 10 min. No apura al usuario;
+  // solo evita dejar un socket girando si se abandona la pestaña. Si conecta, se
+  // cancela (en connection === 'open').
+  _armPairingTimeout(companyId, sock) {
     if (this.qrTimers.has(companyId)) return;
     const k = this._keys(companyId);
     const t = setTimeout(async () => {
       this.qrTimers.delete(companyId);
       if (this.ready.has(companyId)) return; // ya conectó
       logger.warn(`[bot:${companyId}] Vinculación no completada en 10 min; se cierra la sesión de emparejamiento.`);
-      try { await client.destroy(); } catch {}
+      this.stopping.add(companyId);
+      try { sock.end(undefined); } catch {}
       this.ready.delete(companyId);
-      this.clients.delete(companyId);
+      this.socks.delete(companyId);
       this.pairing.delete(companyId);
       await redis.del(k.qr);
       await redis.del(k.pairingCode);
@@ -97,8 +81,7 @@ class BotManager {
     this.qrTimers.set(companyId, t);
   }
 
-  // ¿El cliente está realmente listo para enviar? Tener el Client en el mapa no
-  // basta: el store interno (window.Store) solo existe tras el evento 'ready'.
+  // ¿El cliente está conectado y listo para enviar?
   isReady(companyId) {
     return this.ready.has(companyId);
   }
@@ -112,78 +95,28 @@ class BotManager {
     };
   }
 
-  _clearLocks(companyId) {
-    const sessionDir = path.join(AUTH_BASE, `session-${companyId}`);
-    const locks = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-    for (const f of locks) {
-      try { fs.unlinkSync(path.join(sessionDir, f)); } catch {}
+  _sessionDir(companyId) {
+    return path.join(AUTH_BASE, `baileys-${companyId}`);
+  }
+
+  // ¿Existe una sesión ya guardada (empresa vinculada antes)?
+  _hasSession(companyId) {
+    try {
+      return fs.existsSync(path.join(this._sessionDir(companyId), 'creds.json'));
+    } catch {
+      return false;
     }
   }
 
-  // Borra la caché REGENERABLE de Chromium dentro de la sesión. NO toca la
-  // autenticación de WhatsApp (vive en IndexedDB / Local Storage), así que la
-  // empresa sigue vinculada. Chromium acumula estas carpetas sin límite y, en un
-  // volumen chico (Railway, 500 MB), lo llena → al no poder escribir el perfil,
-  // la pestaña muere en pleno inject: "Execution context was destroyed".
-  // Se corre antes de cada init para mantener el volumen bajo control.
-  _pruneChromiumCache(companyId) {
-    const sessionDir = path.join(AUTH_BASE, `session-${companyId}`);
-    const cacheDirs = [
-      'Default/Cache',
-      'Default/Code Cache',
-      'Default/GPUCache',
-      'Default/DawnCache',
-      'Default/DawnGraphiteCache',
-      'Default/DawnWebGPUCache',
-      'Default/Service Worker/CacheStorage',
-      'Default/Service Worker/ScriptCache',
-      'GrShaderCache',
-      'ShaderCache',
-      'GraphiteDawnCache',
-      'component_crx_cache',
-      'extensions_crx_cache',
-      // Componentes opcionales de Chromium (inútiles para WA). Con
-      // --disable-component-update ya no se re-descargan; esto limpia lo previo.
-      'WidevineCdm',
-      'WasmTtsEngine',
-      'OnDeviceHeadSuggestModel',
-      'ActorSafetyLists',
-      'OptimizationGuidePredictionModels',
-      'OptimizationHints',
-      'SSLErrorAssistant',
-      'Subresource Filter',
-      'FileTypePolicies',
-      'CertificateRevocation',
-      'MEIPreload',
-      'TpcdMetadata',
-      'FirstPartySetsPreloaded',
-      'OriginTrials',
-      'AutofillStates',
-      'PKIMetadata',
-      'segmentation_platform',
-      'Safe Browsing',
-      'ZxcvbnData',
-      'hyphen-data',
-      'TrustTokenKeyCommitments',
-      'ProbabilisticRevealTokenRegistry',
-    ];
-    for (const d of cacheDirs) {
-      try { fs.rmSync(path.join(sessionDir, d), { recursive: true, force: true }); } catch {}
-    }
-  }
-
-  // Borra TODA la sesión guardada (credenciales). Necesario tras un LOGOUT: las
-  // credenciales quedan inválidas y reusarlas provoca "Target closed" en bucle.
-  // Tras esto, el siguiente initialize() genera un QR nuevo para re-vincular.
+  // Borra la sesión guardada. Necesario tras LOGOUT: las credenciales quedan
+  // inválidas; el siguiente initialize genera un QR nuevo para re-vincular.
   _clearSession(companyId) {
-    const sessionDir = path.join(AUTH_BASE, `session-${companyId}`);
-    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(this._sessionDir(companyId), { recursive: true, force: true }); } catch {}
   }
 
-  // Programa un único reintento de reconexión (evita timers duplicados y no
-  // reintenta si la empresa deshabilitó el bot o si no tiene sesión guardada
-  // —en ese caso requiere QR manual, no se debe generar QR automáticamente—).
-  async _scheduleReconnect(companyId, delayMs = 30_000) {
+  // Programa un único reintento de reconexión (sin duplicar timers; no reintenta
+  // si la empresa deshabilitó el bot o si no tiene sesión guardada —requiere QR).
+  async _scheduleReconnect(companyId, delayMs = 15_000) {
     if (this.retryTimers.has(companyId)) return;
     const enabled = await redis.get(this._keys(companyId).enabled);
     if (enabled !== '1') {
@@ -207,210 +140,231 @@ class BotManager {
   //  - 'pairing' → código de 8 dígitos que el usuario escribe en WhatsApp
   //                (Dispositivos vinculados → Vincular con número de teléfono).
   async initCompany(companyId, opts = {}) {
-    if (this.clients.has(companyId)) {
+    if (this.socks.has(companyId)) {
       logger.info(`[bot:${companyId}] Cliente ya activo`);
       return;
     }
 
-    this._clearLocks(companyId);
-    this._pruneChromiumCache(companyId);
     const k = this._keys(companyId);
+    const dir = this._sessionDir(companyId);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const { state, saveCreds } = await useMultiFileAuthState(dir);
 
     const mode = opts.mode === 'pairing' ? 'pairing' : 'qr';
     const phone = opts.phone ? String(opts.phone).replace(/\D/g, '') : null;
-    // Si pidieron emparejamiento pero no hay teléfono válido, caemos a QR.
-    const pairingMode = mode === 'pairing' && phone && phone.length >= 10;
-    this.pairing.set(companyId, { mode: pairingMode ? 'pairing' : 'qr', phone, requested: false });
+    // Emparejamiento solo si hay teléfono válido y la sesión aún no está registrada.
+    const usePairing = mode === 'pairing' && phone && phone.length >= 10 && !state.creds.registered;
+    this.pairing.set(companyId, { mode: usePairing ? 'pairing' : 'qr', phone, requested: false });
 
-    const clientOpts = {
-      authStrategy: new LocalAuth({ clientId: companyId, dataPath: AUTH_BASE }),
-      puppeteer: { executablePath: CHROMIUM, args: PUPPETEER_ARGS, protocolTimeout: PROTOCOL_TIMEOUT },
-    };
-    // Solo fijar versión si se pide explícitamente por env (ver nota arriba).
-    if (WEB_VERSION) {
-      clientOpts.webVersion = WEB_VERSION;
-      clientOpts.webVersionCache = {
-        type: 'remote',
-        remotePath:
-          process.env.WWEBJS_WEB_REMOTE_PATH ||
-          `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`,
-      };
+    // Usa la versión de protocolo actual de WhatsApp Web (con fallback al default
+    // que trae Baileys si no hay red para consultarla).
+    let version;
+    try {
+      ({ version } = await fetchLatestBaileysVersion());
+    } catch (err) {
+      logger.warn(`[bot:${companyId}] No se pudo obtener la versión de WA; se usa el default de Baileys: ${err.message}`);
     }
-    const client = new Client(clientOpts);
 
-    client.on('qr', async (qr) => {
-      const pairing = this.pairing.get(companyId) || {};
+    const sock = makeWASocket({
+      version,
+      auth: state,
+      logger: waLogger,
+      browser: Browsers.ubuntu('PROCURA AI'),
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      // Evita warnings de reintentos; no necesitamos re-hidratar mensajes viejos.
+      getMessage: async () => undefined,
+    });
 
-      // ── Modo código de emparejamiento ──────────────────────────────────────
-      // El evento 'qr' indica que la página de WhatsApp Web ya está lista para
-      // vincular; aprovechamos para pedir el código UNA sola vez (si lo pedimos
-      // en cada rotación, el código cambiaría constantemente y confunde).
-      if (pairing.mode === 'pairing' && pairing.phone && !pairing.requested) {
+    this.socks.set(companyId, sock);
+    this.stopping.delete(companyId);
+    sock.ev.on('creds.update', saveCreds);
+
+    // ── Código de emparejamiento ──────────────────────────────────────────────
+    // Se pide una sola vez, poco después de crear el socket (aún sin registrar).
+    if (usePairing) {
+      setTimeout(async () => {
+        const pairing = this.pairing.get(companyId);
+        if (!pairing || pairing.requested) return;
+        if (!this.socks.has(companyId)) return; // ya se cerró
+        if (sock.authState?.creds?.registered) return;
         pairing.requested = true;
         this.pairing.set(companyId, pairing);
         try {
-          const code = await client.requestPairingCode(pairing.phone);
+          const code = await sock.requestPairingCode(phone);
           await redis.set(k.pairingCode, code, 'EX', 600);
           await redis.del(k.qr);
           await redis.set(k.status, 'pairing_waiting');
           logger.info(`[bot:${companyId}] Código de emparejamiento generado`);
+          this._armPairingTimeout(companyId, sock);
         } catch (err) {
           logger.error(`[bot:${companyId}] Error generando código de emparejamiento: ${err.message}. Se usa QR.`);
-          pairing.mode = 'qr'; // fallback a QR en la próxima rotación
+          pairing.mode = 'qr';
           this.pairing.set(companyId, pairing);
         }
-        this._armPairingTimeout(companyId, client);
-        return;
+      }, 3000);
+    }
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      // ── QR ──────────────────────────────────────────────────────────────────
+      if (qr) {
+        const pairing = this.pairing.get(companyId) || {};
+        if (pairing.mode === 'pairing') return; // en modo código ignoramos el QR
+        logger.info(`[bot:${companyId}] QR generado`);
+        try {
+          const dataUrl = await qrcode.toDataURL(qr);
+          await redis.set(k.qr, dataUrl, 'EX', 180);
+          await redis.set(k.status, 'qr_waiting');
+        } catch (err) {
+          logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
+        }
+        this._armPairingTimeout(companyId, sock);
       }
-      if (pairing.mode === 'pairing' && pairing.requested) {
-        // Código ya emitido; ignoramos las rotaciones de QR para no pisar el código.
-        return;
-      }
 
-      // ── Modo QR ────────────────────────────────────────────────────────────
-      logger.info(`[bot:${companyId}] QR generado`);
-      try {
-        const dataUrl = await qrcode.toDataURL(qr);
-        await redis.set(k.qr, dataUrl, 'EX', 180);
-        await redis.set(k.status, 'qr_waiting');
-      } catch (err) {
-        logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
-      }
-      this._armPairingTimeout(companyId, client);
-    });
-
-    client.on('authenticated', async () => {
-      logger.info(`[bot:${companyId}] Autenticado`);
-      this._clearQrTimer(companyId);
-      await redis.del(k.qr);
-      await redis.del(k.pairingCode);
-      await redis.set(k.status, 'authenticated');
-    });
-
-    client.on('ready', async () => {
-      logger.info(`[bot:${companyId}] Listo`);
-      this._clearQrTimer(companyId);
-      this.pairing.delete(companyId);
-      this.ready.add(companyId);
-      await redis.del(k.qr);
-      await redis.del(k.pairingCode);
-      await redis.set(k.status, 'ready');
-    });
-
-    client.on('disconnected', async (reason) => {
-      logger.warn(`[bot:${companyId}] Desconectado: ${reason}`);
-      this.ready.delete(companyId);
-      this.clients.delete(companyId);
-      this.pairing.delete(companyId);
-      this._clearQrTimer(companyId);
-      await redis.del(k.pairingCode);
-      await redis.set(k.status, 'disconnected');
-
-      // Cerrar el navegador del cliente caído: si no, queda un proceso zombie y
-      // el reintento choca con "Target closed".
-      try { await client.destroy(); } catch {}
-
-      // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
-      // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
-      // deberá pulsar "Generar QR para conectar" cuando quiera re-vincular.
-      if (reason === 'LOGOUT') {
-        this._clearSession(companyId);
+      // ── Conectado ─────────────────────────────────────────────────────────────
+      if (connection === 'open') {
+        logger.info(`[bot:${companyId}] Listo`);
+        this._clearQrTimer(companyId);
+        this.pairing.delete(companyId);
+        this.ready.add(companyId);
         await redis.del(k.qr);
-        logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
+        await redis.del(k.pairingCode);
+        await redis.set(k.status, 'ready');
       }
 
-      await this._scheduleReconnect(companyId);
+      // ── Cerrado ───────────────────────────────────────────────────────────────
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        const intentional = this.stopping.has(companyId);
+        logger.warn(`[bot:${companyId}] Conexión cerrada (code ${statusCode ?? 'n/a'})`);
+
+        this.ready.delete(companyId);
+        this.socks.delete(companyId);
+        this._clearQrTimer(companyId);
+        await redis.del(k.pairingCode);
+        await redis.set(k.status, 'disconnected');
+
+        if (intentional) {
+          this.stopping.delete(companyId);
+          this.pairing.delete(companyId);
+          return; // cierre a propósito (destroyCompany / timeout de emparejamiento)
+        }
+
+        // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
+        // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
+        // pulsa "Generar QR" cuando quiera re-vincular.
+        if (loggedOut) {
+          this._clearSession(companyId);
+          this.pairing.delete(companyId);
+          await redis.del(k.qr);
+          logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
+          return;
+        }
+
+        await this._scheduleReconnect(companyId);
+      }
     });
 
-    client.on('message', async (msg) => {
-      if (msg.from.endsWith('@g.us') || msg.from === 'status@broadcast' || msg.fromMe) return;
-      const text = (msg.body || '').trim();
-      if (!text) return;
-
-      try {
-        const enabled = await redis.get(k.enabled);
-        if (enabled !== '1') return;
-
-        let phone = msg.from.replace('@c.us', '').replace(/\D/g, '');
-        if (msg.from.endsWith('@lid')) {
-          const contact = await msg.getContact();
-          phone = (contact.id?.user || contact.number || '').replace(/\D/g, '');
-        }
-
-        logger.info(`[bot:${companyId}] Mensaje de: ${phone}`);
-
-        // Match por número nacional (últimos 10 dígitos): así coincide aunque el
-        // número guardado esté con o sin el indicativo de país (57).
-        const phoneNat = nationalNumber(phone) || phone;
-
-        // ¿Es un proveedor registrado y activo? (los archivados no interceptan)
-        const supplier = await prisma.supplier.findFirst({
-          where: { companyId, activo: true, whatsapp: { contains: phoneNat } },
-        });
-
-        if (supplier) {
-          const reply = await handleSupplierMessage(text, companyId, supplier.id, supplier.nombre);
-          if (reply) await msg.reply(reply);
-          return;
-        }
-
-        // ¿Es un usuario interno?
-        const user = await prisma.user.findFirst({
-          where: { companyId, whatsapp: { contains: phoneNat }, activo: true },
-          select: { id: true, nombre: true, rol: true },
-        });
-
-        if (!user) return;
-
-        // ¿Hay una acción pendiente para este usuario? (aprobar requisición /
-        // adjudicar ganador desde WhatsApp)
-        const pending = await botFlows.getPending(companyId, user.id);
-        if (pending) {
-          const reply = await botFlows.handlePendingReply(
-            text,
-            companyId,
-            { id: user.id, rol: user.rol, nombre: user.nombre, phone },
-            pending
-          );
-          if (reply) await msg.reply(reply);
-          return;
-        }
-
-        const reply = await buildResponse(text, companyId, { id: user.id, rol: user.rol });
-        if (reply) await msg.reply(reply);
-      } catch (err) {
-        logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`);
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return; // solo mensajes nuevos, no sincronización
+      for (const m of messages) {
+        this._handleIncoming(companyId, m).catch((err) =>
+          logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`)
+        );
       }
     });
 
     await redis.set(k.status, 'disconnected');
-    this.clients.set(companyId, client);
-
-    client.initialize().catch(async (err) => {
-      logger.error(`[bot:${companyId}] Error al inicializar: ${err.message}`);
-      this.ready.delete(companyId);
-      this.clients.delete(companyId);
-      this.pairing.delete(companyId);
-      await redis.set(k.status, 'error');
-      // Cerrar lo que haya quedado a medias y reintentar de forma controlada.
-      try { await client.destroy(); } catch {}
-      this._clearLocks(companyId);
-      await this._scheduleReconnect(companyId);
-    });
   }
 
+  // Procesa un mensaje entrante: proveedor → cotización/entrega; usuario interno →
+  // flujos pendientes o agente IA. Reutiliza toda la lógica de bot.context/flows.
+  async _handleIncoming(companyId, m) {
+    if (!m.message || m.key?.fromMe) return;
+    const jid = m.key?.remoteJid || '';
+    if (jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return;
+
+    const text = extractText(m).trim();
+    if (!text) return;
+
+    const k = this._keys(companyId);
+    const enabled = await redis.get(k.enabled);
+    if (enabled !== '1') return;
+
+    // Número del remitente. Con el nuevo direccionamiento LID de WhatsApp, el jid
+    // puede venir como @lid; en ese caso Baileys expone el número real en un campo
+    // alterno. Probamos varias fuentes y nos quedamos con los dígitos.
+    let senderJid = jid;
+    if (jid.endsWith('@lid')) {
+      senderJid = m.key.remoteJidAlt || m.key.senderPn || m.key.participantAlt || jid;
+    }
+    const phone = senderJid.split('@')[0].replace(/\D/g, '');
+    logger.info(`[bot:${companyId}] Mensaje de: ${phone}`);
+
+    // Match por número nacional (últimos 10 dígitos): coincide con o sin indicativo.
+    const phoneNat = nationalNumber(phone) || phone;
+
+    // ¿Proveedor registrado y activo?
+    const supplier = await prisma.supplier.findFirst({
+      where: { companyId, activo: true, whatsapp: { contains: phoneNat } },
+    });
+    if (supplier) {
+      const reply = await handleSupplierMessage(text, companyId, supplier.id, supplier.nombre);
+      if (reply) await this._reply(companyId, jid, reply, m);
+      return;
+    }
+
+    // ¿Usuario interno?
+    const user = await prisma.user.findFirst({
+      where: { companyId, whatsapp: { contains: phoneNat }, activo: true },
+      select: { id: true, nombre: true, rol: true },
+    });
+    if (!user) return;
+
+    // ¿Acción pendiente? (aprobar requisición / adjudicar ganador desde WhatsApp)
+    const pending = await botFlows.getPending(companyId, user.id);
+    if (pending) {
+      const reply = await botFlows.handlePendingReply(
+        text,
+        companyId,
+        { id: user.id, rol: user.rol, nombre: user.nombre, phone },
+        pending
+      );
+      if (reply) await this._reply(companyId, jid, reply, m);
+      return;
+    }
+
+    const reply = await buildResponse(text, companyId, { id: user.id, rol: user.rol });
+    if (reply) await this._reply(companyId, jid, reply, m);
+  }
+
+  // Responde citando el mensaje original.
+  async _reply(companyId, jid, text, quoted) {
+    const sock = this.socks.get(companyId);
+    if (!sock) return;
+    await sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+  }
+
+  // Detiene el bot de una empresa SIN invalidar la sesión (se puede reconectar
+  // luego sin re-escanear). Para invalidar del todo, el usuario cierra sesión
+  // desde el teléfono (eso dispara LOGOUT y limpia la sesión).
   async destroyCompany(companyId) {
     const timer = this.retryTimers.get(companyId);
     if (timer) { clearTimeout(timer); this.retryTimers.delete(companyId); }
     this._clearQrTimer(companyId);
     const k = this._keys(companyId);
 
-    const client = this.clients.get(companyId);
-    if (client) {
-      try { await client.destroy(); } catch {}
+    const sock = this.socks.get(companyId);
+    if (sock) {
+      this.stopping.add(companyId);
+      try { sock.end(undefined); } catch {}
     }
     this.ready.delete(companyId);
-    this.clients.delete(companyId);
+    this.socks.delete(companyId);
     this.pairing.delete(companyId);
     // Limpiar QR y estado aunque no hubiera cliente vivo en este worker, para que
     // el panel superadmin refleje el cambio de inmediato.
@@ -420,105 +374,30 @@ class BotManager {
     logger.info(`[bot:${companyId}] Destruido`);
   }
 
-  // Envía un mensaje en nombre de una empresa
+  // Envía un mensaje de texto en nombre de una empresa.
   async sendMessage(companyId, phone, text) {
-    const client = this.clients.get(companyId);
-    if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
+    const sock = this.socks.get(companyId);
+    if (!sock) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
     if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    const sanitized = normalizeWhatsapp(phone);
-    return client.sendMessage(`${sanitized}@c.us`, text);
+    return sock.sendMessage(jidFor(phone), { text });
   }
 
-  // Envía un documento (PDF en base64) en nombre de una empresa
+  // Envía un documento (PDF en base64) en nombre de una empresa.
   async sendDocument(companyId, phone, base64, filename, caption) {
-    const client = this.clients.get(companyId);
-    if (!client) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
+    const sock = this.socks.get(companyId);
+    if (!sock) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
     if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    const sanitized = normalizeWhatsapp(phone);
-    const media = new MessageMedia('application/pdf', base64, filename || 'documento.pdf');
-    return client.sendMessage(`${sanitized}@c.us`, media, {
+    return sock.sendMessage(jidFor(phone), {
+      document: Buffer.from(base64, 'base64'),
+      mimetype: 'application/pdf',
+      fileName: filename || 'documento.pdf',
       caption: caption || undefined,
-      sendMediaAsDocument: true,
     });
   }
 
-  // Tamaño recursivo de un directorio en bytes (tolerante a errores).
-  _dirSize(dir) {
-    let total = 0;
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      try {
-        if (e.isDirectory()) total += this._dirSize(p);
-        else total += fs.statSync(p).size;
-      } catch {}
-    }
-    return total;
-  }
-
-  // Reporta en logs el uso del volumen y qué carpetas lo llenan. Sirve para
-  // diagnosticar el "Execution context was destroyed" por disco lleno sin tener
-  // que abrir una shell (útil cuando el contenedor está en crash-loop).
-  reportDiskUsage() {
-    const mb = (b) => `${(b / 1024 / 1024).toFixed(1)} MB`;
-    try {
-      const st = fs.statfsSync(AUTH_BASE);
-      const totalB = st.blocks * st.bsize;
-      const freeB = st.bfree * st.bsize;
-      logger.info(`[bot][disk] Volumen ${AUTH_BASE}: total ${mb(totalB)}, libre ${mb(freeB)}, usado ${mb(totalB - freeB)}`);
-    } catch (e) {
-      logger.warn(`[bot][disk] No se pudo leer statfs de ${AUTH_BASE}: ${e.message}`);
-    }
-    try {
-      const entries = fs.readdirSync(AUTH_BASE, { withFileTypes: true });
-      const sized = entries.map((e) => ({ name: e.name, size: this._dirSize(path.join(AUTH_BASE, e.name)) }));
-      sized.sort((a, b) => b.size - a.size);
-      logger.info(`[bot][disk] Contenido de ${AUTH_BASE} (mayor a menor):`);
-      for (const s of sized.slice(0, 20)) logger.info(`[bot][disk]   ${s.name}: ${mb(s.size)}`);
-      // Desglose de la sesión más pesada, para ver qué subcarpeta la infla.
-      const biggest = sized[0];
-      if (biggest && biggest.size > 20 * 1024 * 1024) {
-        const base = path.join(AUTH_BASE, biggest.name);
-        const walk = (dir, depth) => {
-          if (depth > 3) return;
-          let subs;
-          try { subs = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-          const subSized = subs
-            .filter((e) => e.isDirectory())
-            .map((e) => ({ name: e.name, size: this._dirSize(path.join(dir, e.name)), full: path.join(dir, e.name) }))
-            .sort((a, b) => b.size - a.size)
-            .slice(0, 6);
-          for (const s of subSized) {
-            if (s.size < 1024 * 1024) continue;
-            logger.info(`[bot][disk]   ${path.relative(AUTH_BASE, s.full)}: ${mb(s.size)}`);
-            walk(s.full, depth + 1);
-          }
-        };
-        logger.info(`[bot][disk] Desglose de ${biggest.name}:`);
-        walk(base, 0);
-      }
-    } catch (e) {
-      logger.warn(`[bot][disk] No se pudo listar ${AUTH_BASE}: ${e.message}`);
-    }
-  }
-
-  // ¿Existe una sesión ya guardada (empresa vinculada antes)?
-  _hasSession(companyId) {
-    const dir = path.join(AUTH_BASE, `session-${companyId}`);
-    try {
-      return fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
-    } catch {
-      return false;
-    }
-  }
-
   // Re-inicializa al arrancar el worker SOLO las empresas que ya tienen sesión
-  // vinculada. Una empresa "enabled" pero sin sesión (nunca escaneó el QR) NO se
-  // revive: si no, lanza un Chromium que gira QR para siempre y satura el worker.
-  // Quien quiera vincular una empresa nueva lo hace desde el panel (Conectar).
+  // vinculada. Una empresa "enabled" pero sin sesión (nunca vinculó) NO se revive.
   async restoreActiveSessions() {
-    this.reportDiskUsage();
     const keys = await redis.keys('whatsapp:*:enabled');
     let restored = 0;
     for (const key of keys) {
@@ -532,8 +411,8 @@ class BotManager {
       logger.info(`[bot] Restaurando sesión para empresa ${companyId}`);
       await this.initCompany(companyId);
       restored += 1;
-      // Escalonar: no lanzar varios Chromium en el mismo instante.
-      await new Promise((r) => setTimeout(r, 4000));
+      // Escalonar un poco para no abrir todos los sockets a la vez.
+      await new Promise((r) => setTimeout(r, 1500));
     }
     logger.info(`[bot] Sesiones restauradas: ${restored}`);
   }
