@@ -404,6 +404,67 @@ class BotManager {
     });
   }
 
+  // Tamaño recursivo de un directorio en bytes (tolerante a errores).
+  _dirSize(dir) {
+    let total = 0;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      try {
+        if (e.isDirectory()) total += this._dirSize(p);
+        else total += fs.statSync(p).size;
+      } catch {}
+    }
+    return total;
+  }
+
+  // Reporta en logs el uso del volumen y qué carpetas lo llenan. Sirve para
+  // diagnosticar el "Execution context was destroyed" por disco lleno sin tener
+  // que abrir una shell (útil cuando el contenedor está en crash-loop).
+  reportDiskUsage() {
+    const mb = (b) => `${(b / 1024 / 1024).toFixed(1)} MB`;
+    try {
+      const st = fs.statfsSync(AUTH_BASE);
+      const totalB = st.blocks * st.bsize;
+      const freeB = st.bfree * st.bsize;
+      logger.info(`[bot][disk] Volumen ${AUTH_BASE}: total ${mb(totalB)}, libre ${mb(freeB)}, usado ${mb(totalB - freeB)}`);
+    } catch (e) {
+      logger.warn(`[bot][disk] No se pudo leer statfs de ${AUTH_BASE}: ${e.message}`);
+    }
+    try {
+      const entries = fs.readdirSync(AUTH_BASE, { withFileTypes: true });
+      const sized = entries.map((e) => ({ name: e.name, size: this._dirSize(path.join(AUTH_BASE, e.name)) }));
+      sized.sort((a, b) => b.size - a.size);
+      logger.info(`[bot][disk] Contenido de ${AUTH_BASE} (mayor a menor):`);
+      for (const s of sized.slice(0, 20)) logger.info(`[bot][disk]   ${s.name}: ${mb(s.size)}`);
+      // Desglose de la sesión más pesada, para ver qué subcarpeta la infla.
+      const biggest = sized[0];
+      if (biggest && biggest.size > 20 * 1024 * 1024) {
+        const base = path.join(AUTH_BASE, biggest.name);
+        const walk = (dir, depth) => {
+          if (depth > 3) return;
+          let subs;
+          try { subs = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          const subSized = subs
+            .filter((e) => e.isDirectory())
+            .map((e) => ({ name: e.name, size: this._dirSize(path.join(dir, e.name)), full: path.join(dir, e.name) }))
+            .sort((a, b) => b.size - a.size)
+            .slice(0, 6);
+          for (const s of subSized) {
+            if (s.size < 1024 * 1024) continue;
+            logger.info(`[bot][disk]   ${path.relative(AUTH_BASE, s.full)}: ${mb(s.size)}`);
+            walk(s.full, depth + 1);
+          }
+        };
+        logger.info(`[bot][disk] Desglose de ${biggest.name}:`);
+        walk(base, 0);
+      }
+    } catch (e) {
+      logger.warn(`[bot][disk] No se pudo listar ${AUTH_BASE}: ${e.message}`);
+    }
+  }
+
   // ¿Existe una sesión ya guardada (empresa vinculada antes)?
   _hasSession(companyId) {
     const dir = path.join(AUTH_BASE, `session-${companyId}`);
@@ -419,6 +480,7 @@ class BotManager {
   // revive: si no, lanza un Chromium que gira QR para siempre y satura el worker.
   // Quien quiera vincular una empresa nueva lo hace desde el panel (Conectar).
   async restoreActiveSessions() {
+    this.reportDiskUsage();
     const keys = await redis.keys('whatsapp:*:enabled');
     let restored = 0;
     for (const key of keys) {
