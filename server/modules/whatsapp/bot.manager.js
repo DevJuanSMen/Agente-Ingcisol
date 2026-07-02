@@ -12,18 +12,15 @@ const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone'
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
 const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-// Fija la versión de WhatsApp Web a un HTML conocido-bueno. Sin esto,
-// whatsapp-web.js carga la página EN VIVO de WhatsApp Web; cuando WhatsApp
-// publica una actualización incompatible, la inyección del store provoca una
-// navegación y Puppeteer pierde el contexto → "Execution context was destroyed"
-// y la vinculación nunca completa (se queda cargando). El repo wa-version
-// mantiene los HTML de cada versión. Si esta versión también deja de funcionar,
-// cambia WWEBJS_WEB_VERSION en Railway por una más reciente de:
-// https://github.com/wppconnect-team/wa-version/tree/main/html
-const WEB_VERSION = process.env.WWEBJS_WEB_VERSION || '2.3000.1040146433-alpha';
-const WEB_VERSION_REMOTE_PATH =
-  process.env.WWEBJS_WEB_REMOTE_PATH ||
-  `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`;
+// NO fijar webVersion. Se probó pinnear una versión del repo wa-version cuando
+// creíamos que "Execution context was destroyed" era incompatibilidad de versión,
+// pero la causa real era el DISCO LLENO (ver _pruneChromiumCache). Con la versión
+// forzada, la vinculación funcionaba pero client.sendMessage se COLGABA
+// ("Runtime.callFunctionOn timed out") porque el store inyectado por
+// whatsapp-web.js no coincidía con la versión de WhatsApp Web forzada. Dejar que
+// la librería use su versión compatible por defecto. Solo pinnear (vía
+// WWEBJS_WEB_VERSION) si vuelve un fallo de inyección REAL y ya se descartó disco.
+const WEB_VERSION = process.env.WWEBJS_WEB_VERSION || null;
 
 // Nota: NO usar '--single-process' / '--no-zygote'. Con whatsapp-web.js provocan
 // "Execution context was destroyed" y que la sesión nunca complete el handshake
@@ -225,15 +222,21 @@ class BotManager {
     const pairingMode = mode === 'pairing' && phone && phone.length >= 10;
     this.pairing.set(companyId, { mode: pairingMode ? 'pairing' : 'qr', phone, requested: false });
 
-    const client = new Client({
+    const clientOpts = {
       authStrategy: new LocalAuth({ clientId: companyId, dataPath: AUTH_BASE }),
       puppeteer: { executablePath: CHROMIUM, args: PUPPETEER_ARGS, protocolTimeout: PROTOCOL_TIMEOUT },
-      webVersion: WEB_VERSION,
-      webVersionCache: {
+    };
+    // Solo fijar versión si se pide explícitamente por env (ver nota arriba).
+    if (WEB_VERSION) {
+      clientOpts.webVersion = WEB_VERSION;
+      clientOpts.webVersionCache = {
         type: 'remote',
-        remotePath: WEB_VERSION_REMOTE_PATH,
-      },
-    });
+        remotePath:
+          process.env.WWEBJS_WEB_REMOTE_PATH ||
+          `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`,
+      };
+    }
+    const client = new Client(clientOpts);
 
     client.on('qr', async (qr) => {
       const pairing = this.pairing.get(companyId) || {};
