@@ -49,9 +49,11 @@ const PUPPETEER_ARGS = [
   '--media-cache-size=5242880',
 ];
 
-// CDP puede tardar más cuando el contenedor está bajo presión; el default (180s)
-// a veces expira en pleno inject. Configurable por si hace falta subirlo.
-const PROTOCOL_TIMEOUT = Number(process.env.WWEBJS_PROTOCOL_TIMEOUT || 120_000);
+// Timeout de las llamadas CDP (Runtime.callFunctionOn). El default de Puppeteer
+// es 180s; lo subimos porque el PRIMER envío tras vincular es lento (WhatsApp Web
+// aún sincroniza chats/contactos) y expiraba con "Runtime.callFunctionOn timed
+// out". Configurable por si hace falta más margen.
+const PROTOCOL_TIMEOUT = Number(process.env.WWEBJS_PROTOCOL_TIMEOUT || 240_000);
 
 class BotManager {
   constructor() {
