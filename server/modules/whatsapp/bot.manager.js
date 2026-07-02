@@ -12,6 +12,19 @@ const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone'
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
 const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
+// Fija la versión de WhatsApp Web a un HTML conocido-bueno. Sin esto,
+// whatsapp-web.js carga la página EN VIVO de WhatsApp Web; cuando WhatsApp
+// publica una actualización incompatible, la inyección del store provoca una
+// navegación y Puppeteer pierde el contexto → "Execution context was destroyed"
+// y la vinculación nunca completa (se queda cargando). El repo wa-version
+// mantiene los HTML de cada versión. Si esta versión también deja de funcionar,
+// cambia WWEBJS_WEB_VERSION en Railway por una más reciente de:
+// https://github.com/wppconnect-team/wa-version/tree/main/html
+const WEB_VERSION = process.env.WWEBJS_WEB_VERSION || '2.3000.1040146433-alpha';
+const WEB_VERSION_REMOTE_PATH =
+  process.env.WWEBJS_WEB_REMOTE_PATH ||
+  `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`;
+
 // Nota: NO usar '--single-process' / '--no-zygote'. Con whatsapp-web.js provocan
 // "Execution context was destroyed" y que la sesión nunca complete el handshake
 // (el QR se regenera en bucle sin conectar). Más estable sin ellos.
@@ -21,7 +34,24 @@ const PUPPETEER_ARGS = [
   '--disable-dev-shm-usage',
   '--disable-gpu',
   '--no-first-run',
+  // Reducen consumo de memoria/CPU en contenedores chicos (Railway). Sin esto,
+  // varios Chromium a la vez saturan el contenedor y el kernel mata la pestaña
+  // en pleno inject → "Execution context was destroyed" / protocol timeout.
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-accelerated-2d-canvas',
+  '--mute-audio',
+  // Cap la caché en disco para que Chromium no vuelva a llenar el volumen.
+  '--disk-cache-size=5242880', // 5 MB
+  '--media-cache-size=5242880',
 ];
+
+// CDP puede tardar más cuando el contenedor está bajo presión; el default (180s)
+// a veces expira en pleno inject. Configurable por si hace falta subirlo.
+const PROTOCOL_TIMEOUT = Number(process.env.WWEBJS_PROTOCOL_TIMEOUT || 120_000);
 
 class BotManager {
   constructor() {
@@ -82,6 +112,34 @@ class BotManager {
     }
   }
 
+  // Borra la caché REGENERABLE de Chromium dentro de la sesión. NO toca la
+  // autenticación de WhatsApp (vive en IndexedDB / Local Storage), así que la
+  // empresa sigue vinculada. Chromium acumula estas carpetas sin límite y, en un
+  // volumen chico (Railway, 500 MB), lo llena → al no poder escribir el perfil,
+  // la pestaña muere en pleno inject: "Execution context was destroyed".
+  // Se corre antes de cada init para mantener el volumen bajo control.
+  _pruneChromiumCache(companyId) {
+    const sessionDir = path.join(AUTH_BASE, `session-${companyId}`);
+    const cacheDirs = [
+      'Default/Cache',
+      'Default/Code Cache',
+      'Default/GPUCache',
+      'Default/DawnCache',
+      'Default/DawnGraphiteCache',
+      'Default/DawnWebGPUCache',
+      'Default/Service Worker/CacheStorage',
+      'Default/Service Worker/ScriptCache',
+      'GrShaderCache',
+      'ShaderCache',
+      'GraphiteDawnCache',
+      'component_crx_cache',
+      'extensions_crx_cache',
+    ];
+    for (const d of cacheDirs) {
+      try { fs.rmSync(path.join(sessionDir, d), { recursive: true, force: true }); } catch {}
+    }
+  }
+
   // Borra TODA la sesión guardada (credenciales). Necesario tras un LOGOUT: las
   // credenciales quedan inválidas y reusarlas provoca "Target closed" en bucle.
   // Tras esto, el siguiente initialize() genera un QR nuevo para re-vincular.
@@ -123,6 +181,7 @@ class BotManager {
     }
 
     this._clearLocks(companyId);
+    this._pruneChromiumCache(companyId);
     const k = this._keys(companyId);
 
     const mode = opts.mode === 'pairing' ? 'pairing' : 'qr';
@@ -133,7 +192,12 @@ class BotManager {
 
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: companyId, dataPath: AUTH_BASE }),
-      puppeteer: { executablePath: CHROMIUM, args: PUPPETEER_ARGS },
+      puppeteer: { executablePath: CHROMIUM, args: PUPPETEER_ARGS, protocolTimeout: PROTOCOL_TIMEOUT },
+      webVersion: WEB_VERSION,
+      webVersionCache: {
+        type: 'remote',
+        remotePath: WEB_VERSION_REMOTE_PATH,
+      },
     });
 
     client.on('qr', async (qr) => {
