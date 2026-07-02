@@ -47,6 +47,15 @@ const PUPPETEER_ARGS = [
   // Cap la caché en disco para que Chromium no vuelva a llenar el volumen.
   '--disk-cache-size=5242880', // 5 MB
   '--media-cache-size=5242880',
+  // El actualizador de componentes de Chromium descarga ~110 MB de cosas
+  // INÚTILES para WhatsApp (WidevineCdm/DRM, WasmTtsEngine/texto-a-voz,
+  // OnDeviceHeadSuggestModel, component_crx_cache...) en el perfil = volumen.
+  // Apagarlo es lo que evita que el disco se vuelva a llenar.
+  '--disable-component-update',
+  '--disable-domain-reliability',
+  '--no-default-browser-check',
+  '--disable-client-side-phishing-detection',
+  '--disable-features=OptimizationGuideModelDownloading,OptimizationHints,OptimizationHintsFetching,MediaRouter,DialMediaRouteProvider,TranslateUI,Translate',
 ];
 
 // Timeout de las llamadas CDP (Runtime.callFunctionOn). El default de Puppeteer
@@ -136,6 +145,30 @@ class BotManager {
       'GraphiteDawnCache',
       'component_crx_cache',
       'extensions_crx_cache',
+      // Componentes opcionales de Chromium (inútiles para WA). Con
+      // --disable-component-update ya no se re-descargan; esto limpia lo previo.
+      'WidevineCdm',
+      'WasmTtsEngine',
+      'OnDeviceHeadSuggestModel',
+      'ActorSafetyLists',
+      'OptimizationGuidePredictionModels',
+      'OptimizationHints',
+      'SSLErrorAssistant',
+      'Subresource Filter',
+      'FileTypePolicies',
+      'CertificateRevocation',
+      'MEIPreload',
+      'TpcdMetadata',
+      'FirstPartySetsPreloaded',
+      'OriginTrials',
+      'AutofillStates',
+      'PKIMetadata',
+      'segmentation_platform',
+      'Safe Browsing',
+      'ZxcvbnData',
+      'hyphen-data',
+      'TrustTokenKeyCommitments',
+      'ProbabilisticRevealTokenRegistry',
     ];
     for (const d of cacheDirs) {
       try { fs.rmSync(path.join(sessionDir, d), { recursive: true, force: true }); } catch {}
