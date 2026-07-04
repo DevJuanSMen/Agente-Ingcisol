@@ -1,3 +1,13 @@
+// Silencia el volcado ruidoso de libsignal ("Closing session: SessionEntry {…}")
+// que Baileys imprime por console.log en cada rotación de sesión de cifrado. No
+// aporta y satura los logs. Los logs de la app usan winston, no console.log, así
+// que no se ven afectados.
+const _origConsoleLog = console.log;
+console.log = (...args) => {
+  if (typeof args[0] === 'string' && args[0].startsWith('Closing session')) return;
+  _origConsoleLog(...args);
+};
+
 process.on('uncaughtException', (err) => {
   console.error('[worker] uncaughtException:', err.message, err.stack);
   process.exit(1);

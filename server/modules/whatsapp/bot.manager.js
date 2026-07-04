@@ -265,6 +265,18 @@ class BotManager {
           return;
         }
 
+        // 515 = restartRequired: NO es un fallo, es un paso obligatorio del login
+        // de Baileys (tras escanear/emparejar la conexión se cierra y hay que
+        // re-abrirla con las credenciales ya guardadas). Se reconecta de INMEDIATO
+        // y sin condiciones (las credenciales acaban de guardarse en creds.update).
+        if (statusCode === DisconnectReason.restartRequired) {
+          logger.info(`[bot:${companyId}] Restart requerido (515); reconectando de inmediato...`);
+          this.initCompany(companyId).catch((err) =>
+            logger.error(`[bot:${companyId}] Error en reconexión 515: ${err.message}`)
+          );
+          return;
+        }
+
         await this._scheduleReconnect(companyId);
       }
     });
