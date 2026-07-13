@@ -27,6 +27,10 @@ const { ensureSuperadmin } = require('./shared/ensureSuperadmin');
 
 const app = express();
 
+// Detrás del proxy de Railway/nginx: confiar en el primer X-Forwarded-For para
+// que el rate limiting del login vea la IP real del cliente (no la del proxy).
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
