@@ -1,6 +1,12 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../../shared/db');
 const { normalizeWhatsapp } = require('../../shared/utils/phone');
+const { sendMail } = require('../../shared/mailer');
+
+const ROL_LABEL = {
+  DIRECTOR: 'Director', APOYO_DIRECTOR: 'Apoyo del Director', RESIDENTE: 'Residente',
+  ALMACENISTA: 'Almacenista', CONTABILIDAD: 'Contabilidad',
+};
 
 const listUsers = async (companyId) =>
   prisma.user.findMany({
@@ -28,6 +34,28 @@ const createUser = async (companyId, data) => {
       rol: true, topeAprobacion: true, activo: true, createdAt: true,
     },
   });
+
+  // Enviar las credenciales por correo al nuevo usuario (no bloquea la creación:
+  // si el SMTP no está configurado o falla, el usuario igual queda creado).
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { razonSocial: true },
+  });
+  sendMail({
+    to: email,
+    subject: `Bienvenido a PROCURA AI — tus credenciales de acceso`,
+    titulo: company?.razonSocial || 'Acceso al sistema',
+    html: `
+      <p>Hola <strong>${nombre}</strong>,</p>
+      <p>Se creó tu cuenta en <strong>PROCURA AI</strong>${company ? ` para <strong>${company.razonSocial}</strong>` : ''} con el rol de <strong>${ROL_LABEL[rol] || rol}</strong>.</p>
+      <table style="border-collapse:collapse;margin:12px 0">
+        <tr><td style="padding:4px 12px 4px 0;color:#64748b">Usuario:</td><td style="padding:4px 0"><strong>${email}</strong></td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#64748b">Contraseña:</td><td style="padding:4px 0"><strong>${password}</strong></td></tr>
+      </table>
+      <p style="color:#64748b;font-size:12px">Te recomendamos cambiar la contraseña después del primer ingreso. Si no esperabas este correo, ignóralo.</p>
+    `,
+  }).catch(() => {});
+
   return user;
 };
 

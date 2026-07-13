@@ -27,6 +27,7 @@ const { subscribeToCommands } = require('./modules/whatsapp/bot.ipc');
 const { generateOrderPdf, generateConsolidatedPdf, normalizeAwardedItems } = require('./shared/pdf/orderPdf');
 const requisitionsService = require('./modules/requisitions/requisitions.service');
 const quotationsService = require('./modules/quotations/quotations.service');
+const { sendMail } = require('./shared/mailer');
 
 logger.info('Worker PROCURA AI iniciado');
 
@@ -40,7 +41,7 @@ subscribeToCommands(async (cmd) => {
   logger.info('[worker] Comando recibido:', cmd);
   try {
     if (cmd.action === 'init') {
-      await botManager.initCompany(cmd.companyId, { mode: cmd.mode, phone: cmd.phone });
+      await botManager.initCompany(cmd.companyId);
     } else if (cmd.action === 'destroy') {
       await botManager.destroyCompany(cmd.companyId);
     } else if (cmd.action === 'send_quote_requests') {
@@ -81,19 +82,40 @@ async function notifyReqForApproval(companyId, requisitionId, excludeUserId) {
       companyId,
       rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] },
       activo: true,
-      whatsapp: { not: null },
     },
-    select: { id: true, whatsapp: true },
+    select: { id: true, whatsapp: true, email: true, nombre: true },
   });
+
+  const itemLines = (analysis?.items || [])
+    .map((it) => `<li>${Number(it.cantidad)} ${it.unidad} — ${it.descripcion}${it.precioUnitario ? ` (${fmtCOP(it.precioUnitario)} c/u)` : ''}</li>`)
+    .join('');
 
   for (const d of directors) {
     if (d.id === excludeUserId) continue;
-    await botFlows.setPending(companyId, d.id, {
-      type: 'APPROVE_REQ',
-      requisitionId,
-      consecutivo: req.consecutivo,
-    });
-    enqueueText(companyId, d.whatsapp, msg);
+    if (d.whatsapp) {
+      await botFlows.setPending(companyId, d.id, {
+        type: 'APPROVE_REQ',
+        requisitionId,
+        consecutivo: req.consecutivo,
+      });
+      enqueueText(companyId, d.whatsapp, msg);
+    }
+    // Copia por correo (informativa; la aprobación se hace por WhatsApp o el panel)
+    if (d.email) {
+      sendMail({
+        to: d.email,
+        subject: `Requisición ${req.consecutivo} pendiente de aprobación`,
+        titulo: req.project?.nombre || 'Nueva requisición',
+        html: `
+          <p>Hola <strong>${d.nombre}</strong>,</p>
+          <p>Hay una nueva requisición pendiente de tu aprobación:</p>
+          <p><strong>${req.consecutivo}</strong> · Proyecto ${req.project?.nombre || '—'} · Solicita ${req.solicitante?.nombre || '—'} · Prioridad ${req.prioridad}</p>
+          <ul>${itemLines}</ul>
+          <p>${analysis?.resumen || ''}</p>
+          <p style="color:#64748b;font-size:12px">Puedes aprobarla respondiendo el mensaje de WhatsApp o desde el panel (Requisiciones).</p>
+        `,
+      }).catch(() => {});
+    }
   }
   logger.info(`[worker] Requisición ${req.consecutivo} enviada a ${directors.length} director(es) para aprobar`);
 }
@@ -122,19 +144,37 @@ async function notifyWinnerSelection(companyId, quotationId) {
       companyId,
       rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] },
       activo: true,
-      whatsapp: { not: null },
     },
-    select: { id: true, whatsapp: true },
+    select: { id: true, whatsapp: true, email: true, nombre: true },
   });
 
+  const optRows = options
+    .map((o, i) => `<li>${i + 1}. ${o.nombre} — total ${fmtCOP(o.total)} (${o.count} ítem(s))</li>`)
+    .join('');
+
   for (const d of directors) {
-    await botFlows.setPending(companyId, d.id, {
-      type: 'SELECT_WINNER',
-      quotationId,
-      consecutivo,
-      options,
-    });
-    enqueueText(companyId, d.whatsapp, msg);
+    if (d.whatsapp) {
+      await botFlows.setPending(companyId, d.id, {
+        type: 'SELECT_WINNER',
+        quotationId,
+        consecutivo,
+        options,
+      });
+      enqueueText(companyId, d.whatsapp, msg);
+    }
+    if (d.email) {
+      sendMail({
+        to: d.email,
+        subject: `Cotizaciones listas para adjudicar — ${consecutivo}`,
+        titulo: 'Cotizaciones recibidas',
+        html: `
+          <p>Hola <strong>${d.nombre}</strong>,</p>
+          <p>Todos los proveedores invitados respondieron la cotización de <strong>${consecutivo}</strong>. Ya puedes adjudicar:</p>
+          <ul>${optRows}</ul>
+          <p style="color:#64748b;font-size:12px">Adjudica respondiendo el mensaje de WhatsApp o desde el panel (Cotizaciones).</p>
+        `,
+      }).catch(() => {});
+    }
   }
   logger.info(`[worker] Adjudicación de ${consecutivo} ofrecida a ${directors.length} director(es)`);
 }
@@ -190,7 +230,23 @@ async function sendPoDocuments(companyId, orderIds) {
             `Por favor confirme recibo y fecha de entrega.`
         );
       } else {
-        logger.info(`[worker] Proveedor ${order.proveedor.nombre} sin WhatsApp — no se envía OC`);
+        logger.info(`[worker] Proveedor ${order.proveedor.nombre} sin WhatsApp — no se envía OC por WhatsApp`);
+      }
+      // Copia por correo con el PDF adjunto
+      if (order.proveedor.email) {
+        sendMail({
+          to: order.proveedor.email,
+          subject: `Orden de compra ${order.consecutivo} — ${company?.razonSocial || 'PROCURA AI'}`,
+          titulo: 'Orden de compra adjudicada',
+          html: `
+            <p>Estimado(a) <strong>${order.proveedor.nombre}</strong>,</p>
+            <p>Fue seleccionado como proveedor. Adjuntamos la orden de compra
+            <strong>${order.consecutivo}</strong> por <strong>${fmtCOP(order.montoTotal)}</strong>
+            (proyecto ${project?.nombre || '—'}).</p>
+            <p>Por favor confirme recibo y fecha de entrega.</p>
+          `,
+          attachments: [{ filename: `${order.consecutivo}.pdf`, content: pdf, contentType: 'application/pdf' }],
+        }).catch(() => {});
       }
     } catch (err) {
       logger.error(`[worker] Error generando OC ${order.consecutivo}: ${err.message}`);
@@ -208,9 +264,8 @@ async function sendPoDocuments(companyId, orderIds) {
         companyId,
         rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR', 'CONTABILIDAD'] },
         activo: true,
-        whatsapp: { not: null },
       },
-      select: { whatsapp: true },
+      select: { whatsapp: true, email: true, nombre: true },
     });
 
     const caption =
@@ -219,7 +274,22 @@ async function sendPoDocuments(companyId, orderIds) {
       `Documento para el área financiera.`;
 
     for (const r of recipients) {
-      enqueueDocument(companyId, r.whatsapp, b64, `OC-${requisition.consecutivo}.pdf`, caption);
+      if (r.whatsapp) enqueueDocument(companyId, r.whatsapp, b64, `OC-${requisition.consecutivo}.pdf`, caption);
+      if (r.email) {
+        sendMail({
+          to: r.email,
+          subject: `OC emitida — ${requisition.consecutivo} (${fmtCOP(totalGlobal)})`,
+          titulo: 'Orden de compra emitida',
+          html: `
+            <p>Hola <strong>${r.nombre}</strong>,</p>
+            <p>Se adjudicó la requisición <strong>${requisition.consecutivo}</strong>:
+            ${orders.length} OC a ${groups.length} proveedor(es) por un total de
+            <strong>${fmtCOP(totalGlobal)}</strong>.</p>
+            <p>Adjuntamos el consolidado para el área financiera.</p>
+          `,
+          attachments: [{ filename: `OC-${requisition.consecutivo}.pdf`, content: consolidated, contentType: 'application/pdf' }],
+        }).catch(() => {});
+      }
     }
     logger.info(`[worker] OC consolidada de ${requisition.consecutivo} encolada a ${recipients.length} destinatario(s)`);
   } catch (err) {
@@ -251,13 +321,18 @@ async function sendQuoteRequests(companyId, quotationId) {
 
   const itemLines = items.map((it, i) => `${i + 1}. ${it.descripcion} — ${it.cantidad} ${it.unidad}`).join('\n');
 
+  // Proveedores con WhatsApp O correo (se cotiza por ambos canales disponibles)
   const suppliers = await prisma.supplier.findMany({
-    where: { companyId, activo: true, whatsapp: { not: null } },
-    select: { id: true, nombre: true, whatsapp: true },
+    where: {
+      companyId,
+      activo: true,
+      OR: [{ whatsapp: { not: null } }, { email: { not: null } }],
+    },
+    select: { id: true, nombre: true, whatsapp: true, email: true },
   });
 
   if (suppliers.length === 0) {
-    logger.info(`[worker] Sin proveedores con WhatsApp para empresa ${companyId}`);
+    logger.info(`[worker] Sin proveedores con WhatsApp/correo para empresa ${companyId}`);
     return;
   }
 
@@ -283,7 +358,29 @@ async function sendQuoteRequests(companyId, quotationId) {
       `_Ej: "Cemento 28000, Arena 45000, Entrega 3 días"_`;
 
     // Encolar envío (con delay anti-spam)
-    enqueueText(companyId, supplier.whatsapp, msg);
+    if (supplier.whatsapp) enqueueText(companyId, supplier.whatsapp, msg);
+
+    // Copia por correo, si el proveedor tiene email registrado
+    if (supplier.email) {
+      const itemRows = items
+        .map((it, i) => `<li>${i + 1}. ${it.descripcion} — ${Number(it.cantidad)} ${it.unidad}</li>`)
+        .join('');
+      sendMail({
+        to: supplier.email,
+        subject: `Solicitud de cotización ${req.consecutivo} — ${company?.razonSocial || 'PROCURA AI'}`,
+        titulo: 'Solicitud de cotización',
+        html: `
+          <p>Estimado(a) <strong>${supplier.nombre}</strong>,</p>
+          <p>La empresa <strong>${company?.razonSocial || 'PROCURA AI'}</strong> solicita su mejor precio para:</p>
+          <ul>${itemRows}</ul>
+          <p>📋 Requisición: <strong>${req.consecutivo}</strong><br/>
+             🏗️ Proyecto: <strong>${req.project.nombre}</strong><br/>
+             📅 Fecha límite: <strong>${fechaLimite}</strong></p>
+          <p>Por favor responda por WhatsApp con el precio unitario de cada ítem que pueda suministrar y el tiempo de entrega.<br/>
+          <em>Ej: "Cemento 28000, Arena 45000, Entrega 3 días"</em></p>
+        `,
+      }).catch(() => {});
+    }
 
     // Registrar o actualizar el invite
     await prisma.quotationInvite
