@@ -1,9 +1,13 @@
 const { logger } = require('../../shared/utils/logger');
 const botManager = require('./bot.manager');
 
-// Cola FIFO única para TODOS los envíos salientes del bot. Procesa un mensaje
-// a la vez con un delay aleatorio entre cada uno, para que WhatsApp no detecte
-// ráfagas de mensajes como spam y bloquee la sesión.
+// Cola FIFO POR EMPRESA para los envíos salientes del bot. Cada empresa procesa
+// un mensaje a la vez con un delay aleatorio entre cada uno, para que WhatsApp
+// no detecte ráfagas como spam y bloquee la sesión.
+//
+// Es por empresa (no global) porque cada companyId tiene su propio número/sesión:
+// el anti-spam de una no aplica a la otra, y —clave en multi-empresa— una empresa
+// con el bot caído NO debe frenar los envíos de las demás.
 
 const MIN_MS = Number(process.env.WA_SEND_MIN_MS) || 4000;
 const MAX_MS = Number(process.env.WA_SEND_MAX_MS) || 10000;
@@ -12,11 +16,15 @@ const MAX_RETRIES = 2;
 const NOT_READY_WAIT_MS = 5000;
 const MAX_NOT_READY_WAITS = 60; // ~5 min máximo esperando readiness
 
-const queue = [];
-let processing = false;
+const queues = new Map(); // companyId -> { jobs: [], processing: boolean }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randDelay = () => MIN_MS + Math.floor(Math.random() * Math.max(0, MAX_MS - MIN_MS));
+
+const queueFor = (companyId) => {
+  if (!queues.has(companyId)) queues.set(companyId, { jobs: [], processing: false });
+  return queues.get(companyId);
+};
 
 async function deliver(job) {
   if (job.type === 'doc') {
@@ -26,23 +34,24 @@ async function deliver(job) {
   }
 }
 
-async function processQueue() {
-  if (processing) return;
-  processing = true;
-  while (queue.length) {
-    const job = queue.shift();
+async function processQueue(companyId) {
+  const q = queueFor(companyId);
+  if (q.processing) return;
+  q.processing = true;
+  while (q.jobs.length) {
+    const job = q.jobs.shift();
 
     // Si el cliente aún no está listo, esperamos sin consumir reintentos: el
-    // bot puede tardar en arrancar Chromium / cargar WhatsApp Web o reconectar.
-    if (!botManager.isReady(job.companyId)) {
+    // bot puede tardar en conectar el socket o reconectar tras un corte.
+    if (!botManager.isReady(companyId)) {
       job.notReadyWaits = (job.notReadyWaits || 0) + 1;
       if (job.notReadyWaits <= MAX_NOT_READY_WAITS) {
-        queue.push(job);
+        q.jobs.push(job);
         await sleep(NOT_READY_WAIT_MS);
         continue;
       }
       logger.error(
-        `[sendQueue] Descartado envío a ${job.phone}: cliente de empresa ${job.companyId} nunca estuvo listo`
+        `[sendQueue] Descartado envío a ${job.phone}: cliente de empresa ${companyId} nunca estuvo listo`
       );
       continue;
     }
@@ -50,7 +59,7 @@ async function processQueue() {
     try {
       await deliver(job);
       logger.info(
-        `[sendQueue] Enviado ${job.type} a ${job.phone} (empresa ${job.companyId}) — cola: ${queue.length}`
+        `[sendQueue] Enviado ${job.type} a ${job.phone} (empresa ${companyId}) — cola: ${q.jobs.length}`
       );
     } catch (err) {
       job.retries = (job.retries || 0) + 1;
@@ -58,28 +67,29 @@ async function processQueue() {
         logger.warn(
           `[sendQueue] Falló envío a ${job.phone} (intento ${job.retries}): ${err.message} — reencolando`
         );
-        queue.push(job);
+        q.jobs.push(job);
       } else {
         logger.error(`[sendQueue] Descartado envío a ${job.phone} tras ${job.retries} intentos: ${err.message}`);
       }
     }
-    if (queue.length) await sleep(randDelay());
+    if (q.jobs.length) await sleep(randDelay());
   }
-  processing = false;
+  q.processing = false;
 }
 
 const enqueueText = (companyId, phone, text) => {
   if (!phone || !text) return;
-  queue.push({ type: 'text', companyId, phone, text });
-  processQueue();
+  queueFor(companyId).jobs.push({ type: 'text', companyId, phone, text });
+  processQueue(companyId);
 };
 
 const enqueueDocument = (companyId, phone, base64, filename, caption) => {
   if (!phone || !base64) return;
-  queue.push({ type: 'doc', companyId, phone, base64, filename, caption });
-  processQueue();
+  queueFor(companyId).jobs.push({ type: 'doc', companyId, phone, base64, filename, caption });
+  processQueue(companyId);
 };
 
-const queueSize = () => queue.length;
+const queueSize = () =>
+  [...queues.values()].reduce((a, q) => a + q.jobs.length, 0);
 
 module.exports = { enqueueText, enqueueDocument, queueSize };

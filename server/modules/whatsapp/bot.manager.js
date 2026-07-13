@@ -48,10 +48,10 @@ class BotManager {
   constructor() {
     this.socks = new Map(); // companyId -> sock
     this.retryTimers = new Map(); // companyId -> Timer
-    this.qrTimers = new Map(); // companyId -> Timer (ventana de emparejamiento)
+    this.qrTimers = new Map(); // companyId -> Timer (ventana de vinculación por QR)
     this.ready = new Set(); // companyIds conectados (connection === 'open')
-    this.pairing = new Map(); // companyId -> { mode, phone, requested }
     this.stopping = new Set(); // companyIds que se están deteniendo a propósito
+    this.initializing = new Set(); // guard: evita 2 initCompany concurrentes (doble clic)
   }
 
   _clearQrTimer(companyId) {
@@ -59,8 +59,8 @@ class BotManager {
     if (t) { clearTimeout(t); this.qrTimers.delete(companyId); }
   }
 
-  // Ventana de seguridad para vincular (QR o código): 10 min. No apura al usuario;
-  // solo evita dejar un socket girando si se abandona la pestaña. Si conecta, se
+  // Ventana de seguridad para vincular por QR: 10 min. No apura al usuario; solo
+  // evita dejar un socket girando si se abandona la pestaña. Si conecta, se
   // cancela (en connection === 'open').
   _armPairingTimeout(companyId, sock) {
     if (this.qrTimers.has(companyId)) return;
@@ -68,14 +68,12 @@ class BotManager {
     const t = setTimeout(async () => {
       this.qrTimers.delete(companyId);
       if (this.ready.has(companyId)) return; // ya conectó
-      logger.warn(`[bot:${companyId}] Vinculación no completada en 10 min; se cierra la sesión de emparejamiento.`);
+      logger.warn(`[bot:${companyId}] Vinculación no completada en 10 min; se cierra la sesión.`);
       this.stopping.add(companyId);
       try { sock.end(undefined); } catch {}
       this.ready.delete(companyId);
       this.socks.delete(companyId);
-      this.pairing.delete(companyId);
       await redis.del(k.qr);
-      await redis.del(k.pairingCode);
       await redis.set(k.status, 'disconnected');
     }, 600_000);
     this.qrTimers.set(companyId, t);
@@ -89,7 +87,6 @@ class BotManager {
   _keys(companyId) {
     return {
       qr: `whatsapp:${companyId}:qr`,
-      pairingCode: `whatsapp:${companyId}:pairingCode`,
       status: `whatsapp:${companyId}:status`,
       enabled: `whatsapp:${companyId}:enabled`,
     };
@@ -135,162 +132,139 @@ class BotManager {
     this.retryTimers.set(companyId, timer);
   }
 
-  // opts: { mode: 'qr' | 'pairing', phone?: string }
-  //  - 'qr'      → escanear código QR (clásico).
-  //  - 'pairing' → código de 8 dígitos que el usuario escribe en WhatsApp
-  //                (Dispositivos vinculados → Vincular con número de teléfono).
-  async initCompany(companyId, opts = {}) {
+  // Inicia (o reanuda) la sesión de una empresa. La vinculación es siempre por QR,
+  // que se genera bajo petición desde el panel (botón "Generar QR").
+  async initCompany(companyId) {
     if (this.socks.has(companyId)) {
       logger.info(`[bot:${companyId}] Cliente ya activo`);
       return;
     }
+    // Dos llamadas concurrentes (doble clic en "Generar QR" + reconexión 515)
+    // crearían dos sockets sobre la misma sesión → corrupción / QR en bucle.
+    if (this.initializing.has(companyId)) {
+      logger.info(`[bot:${companyId}] Init ya en curso; se ignora la llamada duplicada`);
+      return;
+    }
+    this.initializing.add(companyId);
 
     const k = this._keys(companyId);
-    const dir = this._sessionDir(companyId);
-    fs.mkdirSync(dir, { recursive: true });
-
-    const { state, saveCreds } = await useMultiFileAuthState(dir);
-
-    const mode = opts.mode === 'pairing' ? 'pairing' : 'qr';
-    const phone = opts.phone ? String(opts.phone).replace(/\D/g, '') : null;
-    // Emparejamiento solo si hay teléfono válido y la sesión aún no está registrada.
-    const usePairing = mode === 'pairing' && phone && phone.length >= 10 && !state.creds.registered;
-    this.pairing.set(companyId, { mode: usePairing ? 'pairing' : 'qr', phone, requested: false });
-
-    // Usa la versión de protocolo actual de WhatsApp Web (con fallback al default
-    // que trae Baileys si no hay red para consultarla).
-    let version;
     try {
-      ({ version } = await fetchLatestBaileysVersion());
-    } catch (err) {
-      logger.warn(`[bot:${companyId}] No se pudo obtener la versión de WA; se usa el default de Baileys: ${err.message}`);
-    }
+      // 'connecting' mientras se abre el socket: el panel hace polling desde ya.
+      await redis.set(k.status, 'connecting', 'EX', 180);
+      const dir = this._sessionDir(companyId);
+      fs.mkdirSync(dir, { recursive: true });
 
-    const sock = makeWASocket({
-      version,
-      auth: state,
-      logger: waLogger,
-      browser: Browsers.ubuntu('PROCURA AI'),
-      syncFullHistory: false,
-      markOnlineOnConnect: false,
-      // Evita warnings de reintentos; no necesitamos re-hidratar mensajes viejos.
-      getMessage: async () => undefined,
-    });
+      const { state, saveCreds } = await useMultiFileAuthState(dir);
 
-    this.socks.set(companyId, sock);
-    this.stopping.delete(companyId);
-    sock.ev.on('creds.update', saveCreds);
+      // Usa la versión de protocolo actual de WhatsApp Web (con fallback al default
+      // que trae Baileys si no hay red para consultarla).
+      let version;
+      try {
+        ({ version } = await fetchLatestBaileysVersion());
+      } catch (err) {
+        logger.warn(`[bot:${companyId}] No se pudo obtener la versión de WA; se usa el default de Baileys: ${err.message}`);
+      }
 
-    // ── Código de emparejamiento ──────────────────────────────────────────────
-    // Se pide una sola vez, poco después de crear el socket (aún sin registrar).
-    if (usePairing) {
-      setTimeout(async () => {
-        const pairing = this.pairing.get(companyId);
-        if (!pairing || pairing.requested) return;
-        if (!this.socks.has(companyId)) return; // ya se cerró
-        if (sock.authState?.creds?.registered) return;
-        pairing.requested = true;
-        this.pairing.set(companyId, pairing);
-        try {
-          const code = await sock.requestPairingCode(phone);
-          await redis.set(k.pairingCode, code, 'EX', 600);
-          await redis.del(k.qr);
-          await redis.set(k.status, 'pairing_waiting');
-          logger.info(`[bot:${companyId}] Código de emparejamiento generado`);
+      const sock = makeWASocket({
+        version,
+        auth: state,
+        logger: waLogger,
+        browser: Browsers.ubuntu('PROCURA AI'),
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        // Evita warnings de reintentos; no necesitamos re-hidratar mensajes viejos.
+        getMessage: async () => undefined,
+      });
+
+      this.socks.set(companyId, sock);
+      this.stopping.delete(companyId);
+      sock.ev.on('creds.update', saveCreds);
+
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        // ── QR ──────────────────────────────────────────────────────────────────
+        if (qr) {
+          logger.info(`[bot:${companyId}] QR generado`);
+          try {
+            const dataUrl = await qrcode.toDataURL(qr);
+            await redis.set(k.qr, dataUrl, 'EX', 180);
+            await redis.set(k.status, 'qr_waiting');
+          } catch (err) {
+            logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
+          }
           this._armPairingTimeout(companyId, sock);
-        } catch (err) {
-          logger.error(`[bot:${companyId}] Error generando código de emparejamiento: ${err.message}. Se usa QR.`);
-          pairing.mode = 'qr';
-          this.pairing.set(companyId, pairing);
-        }
-      }, 3000);
-    }
-
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      // ── QR ──────────────────────────────────────────────────────────────────
-      if (qr) {
-        const pairing = this.pairing.get(companyId) || {};
-        if (pairing.mode === 'pairing') return; // en modo código ignoramos el QR
-        logger.info(`[bot:${companyId}] QR generado`);
-        try {
-          const dataUrl = await qrcode.toDataURL(qr);
-          await redis.set(k.qr, dataUrl, 'EX', 180);
-          await redis.set(k.status, 'qr_waiting');
-        } catch (err) {
-          logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
-        }
-        this._armPairingTimeout(companyId, sock);
-      }
-
-      // ── Conectado ─────────────────────────────────────────────────────────────
-      if (connection === 'open') {
-        logger.info(`[bot:${companyId}] Listo`);
-        this._clearQrTimer(companyId);
-        this.pairing.delete(companyId);
-        this.ready.add(companyId);
-        await redis.del(k.qr);
-        await redis.del(k.pairingCode);
-        await redis.set(k.status, 'ready');
-      }
-
-      // ── Cerrado ───────────────────────────────────────────────────────────────
-      if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const loggedOut = statusCode === DisconnectReason.loggedOut;
-        const intentional = this.stopping.has(companyId);
-        logger.warn(`[bot:${companyId}] Conexión cerrada (code ${statusCode ?? 'n/a'})`);
-
-        this.ready.delete(companyId);
-        this.socks.delete(companyId);
-        this._clearQrTimer(companyId);
-        await redis.del(k.pairingCode);
-        await redis.set(k.status, 'disconnected');
-
-        if (intentional) {
-          this.stopping.delete(companyId);
-          this.pairing.delete(companyId);
-          return; // cierre a propósito (destroyCompany / timeout de emparejamiento)
         }
 
-        // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
-        // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
-        // pulsa "Generar QR" cuando quiera re-vincular.
-        if (loggedOut) {
-          this._clearSession(companyId);
-          this.pairing.delete(companyId);
+        // ── Conectado ─────────────────────────────────────────────────────────────
+        if (connection === 'open') {
+          logger.info(`[bot:${companyId}] Listo`);
+          this._clearQrTimer(companyId);
+          this.ready.add(companyId);
           await redis.del(k.qr);
-          logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
-          return;
+          await redis.set(k.status, 'ready');
         }
 
-        // 515 = restartRequired: NO es un fallo, es un paso obligatorio del login
-        // de Baileys (tras escanear/emparejar la conexión se cierra y hay que
-        // re-abrirla con las credenciales ya guardadas). Se reconecta de INMEDIATO
-        // y sin condiciones (las credenciales acaban de guardarse en creds.update).
-        if (statusCode === DisconnectReason.restartRequired) {
-          logger.info(`[bot:${companyId}] Restart requerido (515); reconectando de inmediato...`);
-          this.initCompany(companyId).catch((err) =>
-            logger.error(`[bot:${companyId}] Error en reconexión 515: ${err.message}`)
+        // ── Cerrado ───────────────────────────────────────────────────────────────
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const loggedOut = statusCode === DisconnectReason.loggedOut;
+          const intentional = this.stopping.has(companyId);
+          logger.warn(`[bot:${companyId}] Conexión cerrada (code ${statusCode ?? 'n/a'})`);
+
+          this.ready.delete(companyId);
+          this.socks.delete(companyId);
+          this._clearQrTimer(companyId);
+          await redis.set(k.status, 'disconnected');
+
+          if (intentional) {
+            this.stopping.delete(companyId);
+            return; // cierre a propósito (destroyCompany / timeout de vinculación)
+          }
+
+          // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
+          // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
+          // pulsa "Generar QR" cuando quiera re-vincular.
+          if (loggedOut) {
+            this._clearSession(companyId);
+            await redis.del(k.qr);
+            logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
+            return;
+          }
+
+          // 515 = restartRequired: NO es un fallo, es un paso obligatorio del login
+          // de Baileys (tras escanear/emparejar la conexión se cierra y hay que
+          // re-abrirla con las credenciales ya guardadas). Se reconecta de INMEDIATO
+          // y sin condiciones (las credenciales acaban de guardarse en creds.update).
+          if (statusCode === DisconnectReason.restartRequired) {
+            logger.info(`[bot:${companyId}] Restart requerido (515); reconectando de inmediato...`);
+            this.initCompany(companyId).catch((err) =>
+              logger.error(`[bot:${companyId}] Error en reconexión 515: ${err.message}`)
+            );
+            return;
+          }
+
+          await this._scheduleReconnect(companyId);
+        }
+      });
+
+      sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return; // solo mensajes nuevos, no sincronización
+        for (const m of messages) {
+          this._handleIncoming(companyId, m).catch((err) =>
+            logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`)
           );
-          return;
         }
-
-        await this._scheduleReconnect(companyId);
-      }
-    });
-
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return; // solo mensajes nuevos, no sincronización
-      for (const m of messages) {
-        this._handleIncoming(companyId, m).catch((err) =>
-          logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`)
-        );
-      }
-    });
-
-    await redis.set(k.status, 'disconnected');
+      });
+      // El estado queda en 'connecting' hasta que llegue el QR (qr_waiting) o la
+      // conexión abra (ready); si falla, el catch de abajo lo deja 'disconnected'.
+    } catch (err) {
+      this.socks.delete(companyId);
+      await redis.set(k.status, 'disconnected').catch(() => {});
+      throw err;
+    } finally {
+      this.initializing.delete(companyId);
+    }
   }
 
   // Procesa un mensaje entrante: proveedor → cotización/entrega; usuario interno →
@@ -377,11 +351,9 @@ class BotManager {
     }
     this.ready.delete(companyId);
     this.socks.delete(companyId);
-    this.pairing.delete(companyId);
     // Limpiar QR y estado aunque no hubiera cliente vivo en este worker, para que
     // el panel superadmin refleje el cambio de inmediato.
     await redis.del(k.qr);
-    await redis.del(k.pairingCode);
     await redis.set(k.status, 'disconnected');
     logger.info(`[bot:${companyId}] Destruido`);
   }

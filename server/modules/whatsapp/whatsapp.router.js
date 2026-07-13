@@ -10,7 +10,6 @@ router.use(requireRole('DIRECTOR', 'APOYO_DIRECTOR'));
 
 const keys = (companyId) => ({
   qr: `whatsapp:${companyId}:qr`,
-  pairingCode: `whatsapp:${companyId}:pairingCode`,
   status: `whatsapp:${companyId}:status`,
   enabled: `whatsapp:${companyId}:enabled`,
 });
@@ -18,32 +17,29 @@ const keys = (companyId) => ({
 router.get('/status', async (req, res, next) => {
   try {
     const k = keys(req.user.companyId);
-    const [enabled, status, qr, pairingCode] = await Promise.all([
+    const [enabled, status, qr] = await Promise.all([
       redis.get(k.enabled),
       redis.get(k.status),
       redis.get(k.qr),
-      redis.get(k.pairingCode),
     ]);
     ok(res, {
       enabled: enabled === '1',
       status: status || 'disconnected',
       qr: qr || null,
-      pairingCode: pairingCode || null,
     });
   } catch (err) { next(err); }
 });
 
-// Inicia la sesión WhatsApp de esta empresa.
-// body: { mode: 'qr' | 'pairing', phone? } — 'pairing' genera un código de 8
-// dígitos que el usuario escribe en WhatsApp (más fácil que escanear el QR).
+// Inicia la sesión WhatsApp de esta empresa. La vinculación es siempre por QR,
+// que se genera bajo petición desde el panel.
 router.post('/connect', async (req, res, next) => {
   try {
-    const { mode, phone } = req.body || {};
-    await publishCommand(redis, 'init', {
-      companyId: req.user.companyId,
-      mode: mode === 'pairing' ? 'pairing' : 'qr',
-      phone: phone || null,
-    });
+    // Marcar 'connecting' de inmediato para que el panel empiece a hacer polling
+    // sin esperar al worker (antes quedaba 'disconnected' hasta que llegara el QR
+    // y el usuario tenía que refrescar a mano). EX 180: si el worker está caído
+    // y nunca responde, el estado vuelve solo a 'disconnected'.
+    await redis.set(keys(req.user.companyId).status, 'connecting', 'EX', 180);
+    await publishCommand(redis, 'init', { companyId: req.user.companyId });
     ok(res, { message: 'Inicializando conexión WhatsApp...' });
   } catch (err) { next(err); }
 });

@@ -9,7 +9,6 @@ const botKeys = (companyId) => ({
   enabled: `whatsapp:${companyId}:enabled`,
   status: `whatsapp:${companyId}:status`,
   qr: `whatsapp:${companyId}:qr`,
-  pairingCode: `whatsapp:${companyId}:pairingCode`,
 });
 
 // Lista todas las empresas con su conteo de usuarios/proyectos y el estado del
@@ -30,18 +29,17 @@ const listCompanies = async () => {
   return Promise.all(
     companies.map(async (c) => {
       const k = botKeys(c.id);
-      const [enabled, status, qr, pairingCode] = await Promise.all([
+      const [enabled, status, qr] = await Promise.all([
         redis.get(k.enabled),
         redis.get(k.status),
         redis.get(k.qr),
-        redis.get(k.pairingCode),
       ]);
       return {
         ...c,
         bot: {
           enabled: enabled === '1',
           status: status || 'disconnected',
-          qrActivo: !!qr || !!pairingCode,
+          qrActivo: !!qr,
         },
       };
     })
