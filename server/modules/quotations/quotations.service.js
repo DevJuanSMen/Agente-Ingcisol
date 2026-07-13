@@ -29,6 +29,9 @@ const QUOTATION_INCLUDE = {
           itemAPUInsumo: {
             select: { tipo: true, descripcion: true, unidad: true, precioUnitario: true, itemAPU: { select: { codigo: true } } },
           },
+          basicPriceInsumo: {
+            select: { tipo: true, descripcion: true, unidad: true, precioUnitario: true },
+          },
         },
       },
     },
@@ -77,7 +80,10 @@ const computeComparison = (quotation) => {
 
   const rows = reqItems.map((ri) => {
     const cantidad = Number(ri.cantidad) || 0;
-    const refPrice = ri.itemAPUInsumo
+    // Referencia: sub-insumo > insumo > APU completo (el nivel más específico manda)
+    const refPrice = ri.basicPriceInsumo
+      ? Number(ri.basicPriceInsumo.precioUnitario)
+      : ri.itemAPUInsumo
       ? Number(ri.itemAPUInsumo.precioUnitario)
       : ri.itemAPU
       ? Number(ri.itemAPU.precioUnitario)

@@ -58,7 +58,7 @@ const getRequisition = async (companyId, requisitionId) => {
       project: { select: { companyId: true, nombre: true, contratoNo: true } },
       solicitante: { select: { nombre: true, rol: true, email: true } },
       aprobador: { select: { nombre: true, rol: true } },
-      items: { include: { itemAPU: true, itemAPUInsumo: { include: { itemAPU: true } } } },
+      items: { include: { itemAPU: true, itemAPUInsumo: { include: { itemAPU: true } }, basicPriceInsumo: true } },
       quotation: { include: { items: { include: { supplier: true, itemAPU: true } } } },
     },
   });
@@ -151,6 +151,26 @@ const analyzeRequisitionBudget = async (companyId, requisitionId) => {
 
   const items = req.items.map((item) => {
     const cantidad = Number(item.cantidad);
+
+    // Caso A0: ítem ligado a un SUB-INSUMO (desglose de un básico compuesto).
+    // Va primero: si hay sub-insumo, su precio manda sobre el del insumo padre.
+    if (item.basicPriceInsumo) {
+      const sub = item.basicPriceInsumo;
+      const apu = item.itemAPUInsumo?.itemAPU || item.itemAPU;
+      const precioUnitario = Number(sub.precioUnitario);
+      return {
+        id: item.id,
+        descripcion: item.descripcion,
+        cantidad,
+        unidad: item.unidad,
+        codigoAPU: apu?.codigo || null,
+        tipoInsumo: sub.tipo,
+        precioUnitario,
+        valorEstimado: cantidad * precioUnitario,
+        veredicto: 'DENTRO_PRESUPUESTO',
+        detalle: `Sub-insumo de «${item.itemAPUInsumo?.descripcion || 'básico compuesto'}»${apu?.codigo ? ` (APU ${apu.codigo})` : ''}. Precio ref.: $${precioUnitario.toLocaleString('es-CO')}.`,
+      };
+    }
 
     // Caso A: ítem ligado a un INSUMO específico de un APU
     if (item.itemAPUInsumo) {

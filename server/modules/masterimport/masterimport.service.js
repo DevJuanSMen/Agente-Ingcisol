@@ -79,9 +79,18 @@ const confirmImport = async (companyId, payload) => {
         : {};
 
       let itemId;
+      let linkedReqItems = [];
       if (prev) {
         await tx.itemAPU.update({ where: { id: prev.id }, data: { ...base, ...saldo } });
-        // Reemplazar insumos (RequisitionItem.itemApuInsumoId queda en null por SetNull)
+        // Antes de reemplazar los insumos, capturar qué ítems de requisición
+        // apuntan a ellos: el deleteMany pone itemApuInsumoId en NULL (SetNull)
+        // y sin esto las requisiciones existentes "pierden" su insumo y el
+        // análisis cae al precio del APU completo. Se re-vinculan más abajo
+        // por descripción normalizada.
+        linkedReqItems = await tx.requisitionItem.findMany({
+          where: { itemAPUInsumo: { itemApuId: prev.id } },
+          select: { id: true, itemAPUInsumo: { select: { descripcion: true } } },
+        });
         await tx.itemAPUInsumo.deleteMany({ where: { itemApuId: prev.id } });
         itemId = prev.id;
       } else {
@@ -104,6 +113,26 @@ const confirmImport = async (companyId, payload) => {
             precioTotal:    parseFloat(x.precioTotal)    || 0,
           })),
         });
+      }
+
+      // Re-vincular ítems de requisición al insumo recreado equivalente
+      // (match por descripción normalizada).
+      if (linkedReqItems.length > 0 && ins.length > 0) {
+        const nuevos = await tx.itemAPUInsumo.findMany({
+          where: { itemApuId: itemId },
+          select: { id: true, descripcion: true },
+        });
+        const byDesc = new Map(nuevos.map((n) => [matchTokens(n.descripcion).join(' '), n.id]));
+        for (const ri of linkedReqItems) {
+          const key = matchTokens(ri.itemAPUInsumo?.descripcion).join(' ');
+          const nuevoId = key ? byDesc.get(key) : null;
+          if (nuevoId) {
+            await tx.requisitionItem.update({
+              where: { id: ri.id },
+              data: { itemApuInsumoId: nuevoId },
+            });
+          }
+        }
       }
       apuCount += 1;
     }
@@ -161,6 +190,13 @@ const confirmImport = async (companyId, payload) => {
     for (const b of compuestos) {
       const basicPriceId = idByCode.get(b.codigo);
       if (!basicPriceId) continue;
+      // Igual que con los insumos de APU: capturar los ítems de requisición que
+      // apuntan a sub-insumos de este básico antes del deleteMany (SetNull) y
+      // re-vincularlos después por descripción normalizada.
+      const linkedSubItems = await prisma.requisitionItem.findMany({
+        where: { basicPriceInsumo: { basicPriceId } },
+        select: { id: true, basicPriceInsumo: { select: { descripcion: true } } },
+      });
       await prisma.basicPriceInsumo.deleteMany({ where: { basicPriceId } });
       await prisma.basicPriceInsumo.createMany({
         data: b.desglose.map((x) => ({
@@ -173,6 +209,23 @@ const confirmImport = async (companyId, payload) => {
           precioTotal:    parseFloat(x.precioTotal)    || 0,
         })).filter((x) => x.descripcion),
       });
+      if (linkedSubItems.length > 0) {
+        const nuevos = await prisma.basicPriceInsumo.findMany({
+          where: { basicPriceId },
+          select: { id: true, descripcion: true },
+        });
+        const byDesc = new Map(nuevos.map((n) => [matchTokens(n.descripcion).join(' '), n.id]));
+        for (const ri of linkedSubItems) {
+          const key = matchTokens(ri.basicPriceInsumo?.descripcion).join(' ');
+          const nuevoId = key ? byDesc.get(key) : null;
+          if (nuevoId) {
+            await prisma.requisitionItem.update({
+              where: { id: ri.id },
+              data: { basicPriceInsumoId: nuevoId },
+            });
+          }
+        }
+      }
     }
   }
 

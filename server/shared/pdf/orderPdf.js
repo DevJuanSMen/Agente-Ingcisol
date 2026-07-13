@@ -544,12 +544,17 @@ const generateConsolidatedPdf = ({ company, requisition, project, groups }) =>
 
 // ── Preparación de datos (compartido entre worker y API) ─────────────────────
 
-// Mismo criterio de casamiento ítem-requisición que computeComparison.
+// Mismo criterio de casamiento ítem-requisición que computeComparison: si el
+// ítem cotizado trae requisitionItemId el match es exacto (clave cuando hay
+// varios insumos del mismo APU en una requisición); si no, cae a itemApuId o
+// descripción (ítems manuales/antiguos).
 const itemMatches = (ri, qi) =>
-  (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
-  (qi.descripcion &&
-    ri.descripcion &&
-    qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim());
+  qi.requisitionItemId
+    ? qi.requisitionItemId === ri.id
+    : (ri.itemApuId && qi.itemApuId && qi.itemApuId === ri.itemApuId) ||
+      (qi.descripcion &&
+        ri.descripcion &&
+        qi.descripcion.toLowerCase().trim() === ri.descripcion.toLowerCase().trim());
 
 // Normaliza QuotationItem adjudicados → filas para el PDF, tomando unidad y
 // cantidad del ítem de requisición correspondiente.
