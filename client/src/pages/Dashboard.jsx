@@ -169,19 +169,30 @@ export default function Dashboard() {
                 projectDash.presupuesto.pctEjecutado > 70 ? 'text-warning' : 'text-success'
               }`}>
                 {projectDash.presupuesto.pctEjecutado}%
+                {(projectDash.presupuesto.pctComprometido || 0) > 0 && (
+                  <span className="text-amber-500 font-medium"> +{projectDash.presupuesto.pctComprometido}% comprometido</span>
+                )}
               </span>
             </div>
-            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+            {/* Barra apilada: ejecutado (pagado) + comprometido (OC emitida sin pagar) */}
+            <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
               <div
-                className={`h-full rounded-full transition-all duration-500 ${
+                className={`h-full transition-all duration-500 ${
                   projectDash.presupuesto.pctEjecutado > 90 ? 'bg-danger' :
                   projectDash.presupuesto.pctEjecutado > 70 ? 'bg-warning' : 'bg-success'
                 }`}
                 style={{ width: `${Math.min(100, projectDash.presupuesto.pctEjecutado)}%` }}
               />
+              <div
+                className="h-full bg-amber-300 transition-all duration-500"
+                style={{ width: `${Math.min(100 - Math.min(100, projectDash.presupuesto.pctEjecutado), projectDash.presupuesto.pctComprometido || 0)}%` }}
+              />
             </div>
-            <div className="flex justify-between text-xs text-slate-400">
+            <div className="flex justify-between text-xs text-slate-400 flex-wrap gap-x-3">
               <span>Ejecutado: {fmtM(projectDash.presupuesto.ejecutado)}</span>
+              {(projectDash.presupuesto.comprometido || 0) > 0 && (
+                <span className="text-amber-500">Comprometido: {fmtM(projectDash.presupuesto.comprometido)}</span>
+              )}
               <span>Saldo: {fmtM(projectDash.presupuesto.saldo)}</span>
               <span>Total: {fmtM(projectDash.presupuesto.total)}</span>
             </div>

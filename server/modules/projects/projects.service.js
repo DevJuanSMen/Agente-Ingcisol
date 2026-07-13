@@ -112,6 +112,14 @@ const getProjectDashboard = async (companyId, projectId) => {
     select: { estado: true, montoTotal: true, fechaEntregaPactada: true },
   });
 
+  // Comprometido: OC emitidas/en curso que aún no se pagan. El saldo APU solo se
+  // descuenta al registrar el pago, así que esto muestra la plata ya "amarrada"
+  // apenas se adjudica (el dashboard reacciona de inmediato, sin esperar al pago).
+  const totalComprometido = ordenes
+    .filter((o) => !['COMPLETADA', 'CANCELADA'].includes(o.estado))
+    .reduce((acc, o) => acc + Number(o.montoTotal), 0);
+  const pctComprometido = totalPresupuesto > 0 ? (totalComprometido / totalPresupuesto) * 100 : 0;
+
   const ocActivas = ordenes.filter((o) => !['COMPLETADA', 'CANCELADA'].includes(o.estado)).length;
   const ocVencidas = ordenes.filter(
     (o) => !['COMPLETADA', 'CANCELADA'].includes(o.estado) &&
@@ -158,7 +166,9 @@ const getProjectDashboard = async (companyId, projectId) => {
       total: totalPresupuesto,
       ejecutado: totalEjecutado,
       saldo: totalSaldo,
+      comprometido: totalComprometido,
       pctEjecutado: Math.round(pctEjecutado * 10) / 10,
+      pctComprometido: Math.round(pctComprometido * 10) / 10,
       itemsAPU: project.itemsAPU.length,
     },
     ordenes: { activas: ocActivas, vencidas: ocVencidas, montoTotal: montoOC },

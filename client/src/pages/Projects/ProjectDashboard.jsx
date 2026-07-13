@@ -165,9 +165,22 @@ export default function ProjectDashboard() {
                   {pctPresupuesto}%
                 </span>
               </div>
-              <ProgressBar value={pctPresupuesto} color={presupuestoColor} />
-              <div className="flex justify-between text-xs text-slate-400 mt-1">
+              {/* Barra apilada: ejecutado (pagado) + comprometido (OC emitida sin pagar) */}
+              <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
+                <div
+                  className={`h-full transition-all duration-500 ${presupuestoColor}`}
+                  style={{ width: `${Math.min(100, pctPresupuesto)}%` }}
+                />
+                <div
+                  className="h-full bg-amber-300 transition-all duration-500"
+                  style={{ width: `${Math.min(100 - Math.min(100, pctPresupuesto), presupuesto.pctComprometido || 0)}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-slate-400 mt-1 flex-wrap gap-x-3">
                 <span>Ejecutado: {fmtM(presupuesto.ejecutado)}</span>
+                {(presupuesto.comprometido || 0) > 0 && (
+                  <span className="text-amber-500">Comprometido: {fmtM(presupuesto.comprometido)}</span>
+                )}
                 <span>Saldo: {fmtM(presupuesto.saldo)}</span>
               </div>
             </div>
