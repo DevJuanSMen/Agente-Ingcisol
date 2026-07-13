@@ -9,6 +9,9 @@ const authService = require('./auth.service');
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 15,
+  // Solo cuentan los intentos FALLIDOS: varios usuarios legítimos detrás de la
+  // misma IP (oficina/NAT) no se bloquean entre sí por iniciar sesión bien.
+  skipSuccessfulRequests: true,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: true, message: 'Demasiados intentos. Espera 15 minutos e inténtalo de nuevo.' },
