@@ -13,6 +13,21 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Estado del onboarding (wizard). Lo consulta cualquier usuario autenticado de
+// la empresa (los no-directores ven la pantalla de "espera al director").
+router.get('/onboarding', async (req, res, next) => {
+  try {
+    ok(res, await companyService.getOnboarding(req.user.companyId));
+  } catch (err) { next(err); }
+});
+
+// Valida el paso actual contra la BD y avanza. Solo el director conduce el wizard.
+router.post('/onboarding/advance', requireRole('DIRECTOR'), async (req, res, next) => {
+  try {
+    ok(res, await companyService.advanceOnboarding(req.user.companyId));
+  } catch (err) { next(err); }
+});
+
 router.put('/', requireRole('DIRECTOR'), async (req, res, next) => {
   try {
     const company = await companyService.updateCompany(req.user.companyId, req.body);

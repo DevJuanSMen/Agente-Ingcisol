@@ -1,18 +1,17 @@
 const prisma = require('../../shared/db');
 const redis = require('../../shared/redis');
-const { publishCommand } = require('../whatsapp/bot.ipc');
 
 // Empresa "de sistema" que aloja al superadmin; se oculta del listado.
 const SYSTEM_COMPANY_ID = 'system-platform';
 
-const botKeys = (companyId) => ({
-  enabled: `whatsapp:${companyId}:enabled`,
-  status: `whatsapp:${companyId}:status`,
-  qr: `whatsapp:${companyId}:qr`,
-});
+const enabledKey = (companyId) => `whatsapp:${companyId}:enabled`;
 
-// Lista todas las empresas con su conteo de usuarios/proyectos y el estado del
-// bot de WhatsApp (leído de Redis).
+// El flag por empresa es un interruptor de EXCLUSIÓN: sin flag (o '1') la
+// empresa usa el bot global; solo '0' explícito la apaga.
+const botEnabled = async (companyId) => (await redis.get(enabledKey(companyId))) !== '0';
+
+// Lista todas las empresas con su conteo de usuarios/proyectos y si están
+// habilitadas en el bot global.
 const listCompanies = async () => {
   const companies = await prisma.company.findMany({
     where: { id: { not: SYSTEM_COMPANY_ID } },
@@ -21,42 +20,71 @@ const listCompanies = async () => {
       razonSocial: true,
       nit: true,
       createdAt: true,
+      setupCompletedAt: true,
       _count: { select: { users: true, projects: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
 
   return Promise.all(
-    companies.map(async (c) => {
-      const k = botKeys(c.id);
-      const [enabled, status, qr] = await Promise.all([
-        redis.get(k.enabled),
-        redis.get(k.status),
-        redis.get(k.qr),
-      ]);
-      return {
-        ...c,
-        bot: {
-          enabled: enabled === '1',
-          status: status || 'disconnected',
-          qrActivo: !!qr,
-        },
-      };
-    })
+    companies.map(async (c) => ({
+      ...c,
+      bot: { enabled: await botEnabled(c.id) },
+    }))
   );
 };
 
-// Inhabilita el bot de una empresa: apaga el flag y destruye su sesión activa.
+// Vista completa de la plataforma: empresas con sus miembros y proyectos.
+const getOverview = async () => {
+  const companies = await prisma.company.findMany({
+    where: { id: { not: SYSTEM_COMPANY_ID } },
+    select: {
+      id: true,
+      razonSocial: true,
+      nit: true,
+      ciudad: true,
+      createdAt: true,
+      onboardingStep: true,
+      setupCompletedAt: true,
+      users: {
+        select: { id: true, nombre: true, email: true, rol: true, whatsapp: true, activo: true },
+        orderBy: { createdAt: 'asc' },
+      },
+      projects: {
+        select: { id: true, nombre: true, contratoNo: true, estado: true, activo: true, ciudad: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return Promise.all(
+    companies.map(async (c) => ({
+      ...c,
+      bot: { enabled: await botEnabled(c.id) },
+    }))
+  );
+};
+
+// Estado de la sesión ÚNICA global de WhatsApp (QR del superadmin).
+const getWhatsappStatus = async () => {
+  const [status, qr] = await Promise.all([
+    redis.get('whatsapp:global:status'),
+    redis.get('whatsapp:global:qr'),
+  ]);
+  return { status: status || 'disconnected', qr: qr || null };
+};
+
+// Excluye a una empresa del bot global (solo apaga el flag; la sesión sigue viva
+// para las demás empresas).
 const disableBot = async (companyId) => {
-  await redis.set(botKeys(companyId).enabled, '0');
-  await publishCommand(redis, 'destroy', { companyId });
+  await redis.set(enabledKey(companyId), '0');
   return { enabled: false };
 };
 
-// Reactiva el flag (la vinculación con QR la hace la empresa desde su panel).
 const enableBot = async (companyId) => {
-  await redis.set(botKeys(companyId).enabled, '1');
+  await redis.set(enabledKey(companyId), '1');
   return { enabled: true };
 };
 
-module.exports = { listCompanies, disableBot, enableBot, SYSTEM_COMPANY_ID };
+module.exports = { listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, SYSTEM_COMPANY_ID };

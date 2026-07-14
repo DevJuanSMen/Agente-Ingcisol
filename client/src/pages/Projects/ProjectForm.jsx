@@ -23,7 +23,9 @@ const EMPTY = {
   valor: '', inicio: '', fin: '', icono: '🏗️', color: '#E85D04', estado: 'PLANIFICADO',
 };
 
-export default function ProjectForm() {
+// `embedded`: dentro del wizard de onboarding (sin título ni navegación al guardar).
+// `onCreated(project)`: callback con el proyecto recién creado (modo embebido).
+export default function ProjectForm({ embedded = false, onCreated }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const { loadProjects } = useProjectStore();
@@ -68,13 +70,19 @@ export default function ProjectForm() {
     setLoading(true);
     setError('');
     try {
+      let created = null;
       if (isEdit) {
         await api.put(`/projects/${id}`, form);
       } else {
-        await api.post('/projects', form);
+        const { data } = await api.post('/projects', form);
+        created = data.data;
       }
       await loadProjects();
-      navigate('/projects');
+      if (embedded) {
+        onCreated?.(created);
+      } else {
+        navigate('/projects');
+      }
     } catch (err) {
       setError(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -92,14 +100,16 @@ export default function ProjectForm() {
 
   return (
     <div className="max-w-2xl">
-      <div className="mb-6">
-        <h1 className="text-xl font-bold text-slate-800">
-          {isEdit ? 'Editar proyecto' : 'Nuevo proyecto'}
-        </h1>
-        <p className="text-sm text-slate-500 mt-0.5">
-          {isEdit ? 'Modifica la configuración del proyecto' : 'Configura un nuevo proyecto de construcción'}
-        </p>
-      </div>
+      {!embedded && (
+        <div className="mb-6">
+          <h1 className="text-xl font-bold text-slate-800">
+            {isEdit ? 'Editar proyecto' : 'Nuevo proyecto'}
+          </h1>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {isEdit ? 'Modifica la configuración del proyecto' : 'Configura un nuevo proyecto de construcción'}
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">{error}</div>
@@ -279,9 +289,11 @@ export default function ProjectForm() {
           <Button type="submit" loading={loading}>
             {isEdit ? 'Guardar cambios' : 'Crear proyecto'}
           </Button>
-          <Button type="button" variant="secondary" onClick={() => navigate('/projects')}>
-            Cancelar
-          </Button>
+          {!embedded && (
+            <Button type="button" variant="secondary" onClick={() => navigate('/projects')}>
+              Cancelar
+            </Button>
+          )}
         </div>
       </form>
     </div>

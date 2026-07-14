@@ -19,6 +19,14 @@ api.interceptors.response.use(
       useAuthStore.getState().logout();
       window.location.href = '/login';
     }
+    // La empresa no ha completado la configuración inicial: llevar al wizard.
+    if (
+      error.response?.status === 403 &&
+      error.response?.data?.code === 'SETUP_INCOMPLETE' &&
+      window.location.pathname !== '/onboarding'
+    ) {
+      window.location.href = '/onboarding';
+    }
     return Promise.reject(error);
   }
 );

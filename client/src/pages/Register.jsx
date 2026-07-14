@@ -35,7 +35,8 @@ export default function Register() {
     try {
       const { confirm, ...payload } = form;
       await register(payload);
-      navigate('/', { replace: true });
+      // La empresa recién creada siempre entra al onboarding obligatorio.
+      navigate('/onboarding', { replace: true });
     } catch (err) {
       setError(err.response?.data?.message || 'Error al crear la cuenta');
     } finally {

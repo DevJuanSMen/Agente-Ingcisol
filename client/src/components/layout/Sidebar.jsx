@@ -23,7 +23,6 @@ const ALL_ROUTES = [
   { path: '/company', label: 'Empresa', icon: '🏢', mod: 'company' },
   { path: '/settings/users', label: 'Usuarios', icon: '👥', directorOnly: true },
   { path: '/settings/permissions', label: 'Permisos', icon: '🔐', directorOnly: true },
-  { path: '/settings/whatsapp', label: 'Bot WhatsApp', icon: '💬', mod: 'whatsapp' },
 ];
 
 const ESTADO_COLOR = {

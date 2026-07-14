@@ -53,7 +53,7 @@ const register = async ({ razonSocial, nit, nombre, email, password, whatsapp })
         whatsapp: whatsapp || null,
         rol: 'DIRECTOR',
       },
-      include: { company: { select: { razonSocial: true } } },
+      include: { company: { select: { razonSocial: true, onboardingStep: true, setupCompletedAt: true } } },
     });
   });
 
@@ -65,7 +65,7 @@ const register = async ({ razonSocial, nit, nombre, email, password, whatsapp })
 const login = async (email, password) => {
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { company: { select: { razonSocial: true } } },
+    include: { company: { select: { razonSocial: true, onboardingStep: true, setupCompletedAt: true } } },
   });
 
   if (!user || !user.activo) {
@@ -93,7 +93,11 @@ const refreshToken = async (userId) => {
 const me = async (userId) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    include: { company: { select: { id: true, razonSocial: true, nit: true, logoUrl: true } } },
+    include: {
+      company: {
+        select: { id: true, razonSocial: true, nit: true, logoUrl: true, onboardingStep: true, setupCompletedAt: true },
+      },
+    },
   });
   if (!user) throw Object.assign(new Error('Usuario no encontrado'), { statusCode: 404 });
   const { passwordHash, ...safeUser } = user;
@@ -111,12 +115,12 @@ const requestPasswordReset = async (email) => {
   const user = await prisma.user.findUnique({ where: { email: normalized } });
   if (!user || !user.activo || !user.whatsapp) return generic;
 
-  // ¿El bot de la empresa está habilitado y conectado?
+  // ¿La empresa tiene el bot habilitado y la sesión global está conectada?
   const [enabled, status] = await Promise.all([
     redis.get(`whatsapp:${user.companyId}:enabled`),
-    redis.get(`whatsapp:${user.companyId}:status`),
+    redis.get('whatsapp:global:status'),
   ]);
-  if (enabled !== '1' || status !== 'ready') {
+  if (enabled === '0' || status !== 'ready') {
     // Sin canal para enviar el código: el frontend mostrará que contacte al Director.
     return { sent: false, botUnavailable: true };
   }

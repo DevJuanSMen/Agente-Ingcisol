@@ -11,17 +11,25 @@ const {
 const qrcode = require('qrcode');
 const { logger } = require('../../shared/utils/logger');
 const redis = require('../../shared/redis');
-const prisma = require('../../shared/db');
-const { buildResponse, handleSupplierMessage } = require('./bot.context');
-const botFlows = require('./bot.flows');
-const { normalizeWhatsapp, nationalNumber } = require('../../shared/utils/phone');
+const { routeIncoming } = require('./bot.router.msg');
+const { normalizeWhatsapp } = require('../../shared/utils/phone');
 
-// Sesiones de Baileys (multi-file auth). Son de KB (no perfiles de Chromium),
-// así que el volumen de Railway ya no se llena. Reutilizamos la misma variable de
-// entorno para no cambiar el mount del volumen; los datos nuevos van a
-// subcarpetas baileys-<companyId> (conviven con las viejas session-<id> de
-// whatsapp-web.js, que ya no se usan y pueden borrarse a mano).
+// Sesión ÚNICA de Baileys para toda la plataforma: un solo número/QR responde a
+// todas las empresas (el ruteo por empresa se hace por el número del remitente,
+// ver bot.router.msg.js). Reutilizamos la misma variable de entorno para no
+// cambiar el mount del volumen; la sesión vive en la subcarpeta baileys-global
+// (las viejas baileys-<companyId> del modelo multi-sesión se migran solas si
+// hay exactamente una, o pueden borrarse a mano).
 const AUTH_BASE = process.env.WWEBJS_AUTH_PATH || '/app/.wwebjs_auth';
+const SESSION_DIR = 'baileys-global';
+
+// Llaves Redis del estado global de la sesión. El flag por empresa
+// whatsapp:<companyId>:enabled se conserva como interruptor del superadmin.
+const K = {
+  qr: 'whatsapp:global:qr',
+  status: 'whatsapp:global:status',
+};
+const enabledKey = (companyId) => `whatsapp:${companyId}:enabled`;
 
 // Baileys exige un logger tipo pino; lo silenciamos (usamos el logger propio).
 const waLogger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
@@ -46,112 +54,118 @@ const extractText = (msg) => {
 
 class BotManager {
   constructor() {
-    this.socks = new Map(); // companyId -> sock
-    this.retryTimers = new Map(); // companyId -> Timer
-    this.qrTimers = new Map(); // companyId -> Timer (ventana de vinculación por QR)
-    this.ready = new Set(); // companyIds conectados (connection === 'open')
-    this.stopping = new Set(); // companyIds que se están deteniendo a propósito
-    this.initializing = new Set(); // guard: evita 2 initCompany concurrentes (doble clic)
+    this.sock = null;
+    this.retryTimer = null;
+    this.qrTimer = null; // ventana de vinculación por QR
+    this.ready = false; // connection === 'open'
+    this.stopping = false; // cierre a propósito
+    this.initializing = false; // guard: evita 2 init concurrentes (doble clic)
   }
 
-  _clearQrTimer(companyId) {
-    const t = this.qrTimers.get(companyId);
-    if (t) { clearTimeout(t); this.qrTimers.delete(companyId); }
+  _clearQrTimer() {
+    if (this.qrTimer) { clearTimeout(this.qrTimer); this.qrTimer = null; }
   }
 
   // Ventana de seguridad para vincular por QR: 10 min. No apura al usuario; solo
   // evita dejar un socket girando si se abandona la pestaña. Si conecta, se
   // cancela (en connection === 'open').
-  _armPairingTimeout(companyId, sock) {
-    if (this.qrTimers.has(companyId)) return;
-    const k = this._keys(companyId);
-    const t = setTimeout(async () => {
-      this.qrTimers.delete(companyId);
-      if (this.ready.has(companyId)) return; // ya conectó
-      logger.warn(`[bot:${companyId}] Vinculación no completada en 10 min; se cierra la sesión.`);
-      this.stopping.add(companyId);
+  _armPairingTimeout(sock) {
+    if (this.qrTimer) return;
+    this.qrTimer = setTimeout(async () => {
+      this.qrTimer = null;
+      if (this.ready) return; // ya conectó
+      logger.warn('[bot] Vinculación no completada en 10 min; se cierra la sesión.');
+      this.stopping = true;
       try { sock.end(undefined); } catch {}
-      this.ready.delete(companyId);
-      this.socks.delete(companyId);
-      await redis.del(k.qr);
-      await redis.set(k.status, 'disconnected');
+      this.ready = false;
+      this.sock = null;
+      await redis.del(K.qr);
+      await redis.set(K.status, 'disconnected');
     }, 600_000);
-    this.qrTimers.set(companyId, t);
   }
 
   // ¿El cliente está conectado y listo para enviar?
-  isReady(companyId) {
-    return this.ready.has(companyId);
+  isReady() {
+    return this.ready;
   }
 
-  _keys(companyId) {
-    return {
-      qr: `whatsapp:${companyId}:qr`,
-      status: `whatsapp:${companyId}:status`,
-      enabled: `whatsapp:${companyId}:enabled`,
-    };
+  _sessionDir() {
+    return path.join(AUTH_BASE, SESSION_DIR);
   }
 
-  _sessionDir(companyId) {
-    return path.join(AUTH_BASE, `baileys-${companyId}`);
-  }
-
-  // ¿Existe una sesión ya guardada (empresa vinculada antes)?
-  _hasSession(companyId) {
+  // ¿Existe una sesión ya guardada (número vinculado antes)?
+  _hasSession() {
     try {
-      return fs.existsSync(path.join(this._sessionDir(companyId), 'creds.json'));
+      return fs.existsSync(path.join(this._sessionDir(), 'creds.json'));
     } catch {
       return false;
     }
   }
 
   // Borra la sesión guardada. Necesario tras LOGOUT: las credenciales quedan
-  // inválidas; el siguiente initialize genera un QR nuevo para re-vincular.
-  _clearSession(companyId) {
-    try { fs.rmSync(this._sessionDir(companyId), { recursive: true, force: true }); } catch {}
+  // inválidas; el siguiente init genera un QR nuevo para re-vincular.
+  _clearSession() {
+    try { fs.rmSync(this._sessionDir(), { recursive: true, force: true }); } catch {}
+  }
+
+  // Migración desde el modelo multi-sesión: si no hay sesión global pero existe
+  // EXACTAMENTE una sesión legacy baileys-<companyId>, se renombra a global (la
+  // empresa piloto conserva su vinculación sin re-escanear). Con 0 o ≥2 sesiones
+  // legacy no se migra nada: el superadmin escanea el QR desde el panel.
+  _migrateLegacySession() {
+    try {
+      if (this._hasSession()) return;
+      if (!fs.existsSync(AUTH_BASE)) return;
+      const legacy = fs
+        .readdirSync(AUTH_BASE)
+        .filter((d) => d.startsWith('baileys-') && d !== SESSION_DIR)
+        .filter((d) => fs.existsSync(path.join(AUTH_BASE, d, 'creds.json')));
+      if (legacy.length === 1) {
+        fs.renameSync(path.join(AUTH_BASE, legacy[0]), this._sessionDir());
+        logger.info(`[bot] Sesión migrada: ${legacy[0]} → ${SESSION_DIR}`);
+      } else if (legacy.length > 1) {
+        logger.warn(`[bot] ${legacy.length} sesiones legacy encontradas; no se migra ninguna (re-vincular por QR).`);
+      }
+    } catch (err) {
+      logger.error(`[bot] Error migrando sesión legacy: ${err.message}`);
+    }
   }
 
   // Programa un único reintento de reconexión (sin duplicar timers; no reintenta
-  // si la empresa deshabilitó el bot o si no tiene sesión guardada —requiere QR).
-  async _scheduleReconnect(companyId, delayMs = 15_000) {
-    if (this.retryTimers.has(companyId)) return;
-    const enabled = await redis.get(this._keys(companyId).enabled);
-    if (enabled !== '1') {
-      logger.info(`[bot:${companyId}] Bot deshabilitado; no se reconecta`);
+  // si no hay sesión guardada — requiere QR).
+  async _scheduleReconnect(delayMs = 15_000) {
+    if (this.retryTimer) return;
+    if (!this._hasSession()) {
+      logger.info('[bot] Sin sesión guardada; no se reconecta solo (requiere QR manual).');
       return;
     }
-    if (!this._hasSession(companyId)) {
-      logger.info(`[bot:${companyId}] Sin sesión guardada; no se reconecta solo (requiere QR manual).`);
-      return;
-    }
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(companyId);
-      logger.info(`[bot:${companyId}] Reintentando reconexión...`);
-      this.initCompany(companyId);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      logger.info('[bot] Reintentando reconexión...');
+      this.init();
     }, delayMs);
-    this.retryTimers.set(companyId, timer);
   }
 
-  // Inicia (o reanuda) la sesión de una empresa. La vinculación es siempre por QR,
-  // que se genera bajo petición desde el panel (botón "Generar QR").
-  async initCompany(companyId) {
-    if (this.socks.has(companyId)) {
-      logger.info(`[bot:${companyId}] Cliente ya activo`);
+  // Inicia (o reanuda) la sesión global. La vinculación es siempre por QR, que se
+  // genera bajo petición desde el panel superadmin (botón "Generar QR").
+  async init() {
+    if (this.sock) {
+      logger.info('[bot] Cliente ya activo');
       return;
     }
     // Dos llamadas concurrentes (doble clic en "Generar QR" + reconexión 515)
     // crearían dos sockets sobre la misma sesión → corrupción / QR en bucle.
-    if (this.initializing.has(companyId)) {
-      logger.info(`[bot:${companyId}] Init ya en curso; se ignora la llamada duplicada`);
+    if (this.initializing) {
+      logger.info('[bot] Init ya en curso; se ignora la llamada duplicada');
       return;
     }
-    this.initializing.add(companyId);
+    this.initializing = true;
 
-    const k = this._keys(companyId);
     try {
       // 'connecting' mientras se abre el socket: el panel hace polling desde ya.
-      await redis.set(k.status, 'connecting', 'EX', 180);
-      const dir = this._sessionDir(companyId);
+      await redis.set(K.status, 'connecting', 'EX', 180);
+      this._migrateLegacySession();
+      const dir = this._sessionDir();
       fs.mkdirSync(dir, { recursive: true });
 
       const { state, saveCreds } = await useMultiFileAuthState(dir);
@@ -162,7 +176,7 @@ class BotManager {
       try {
         ({ version } = await fetchLatestBaileysVersion());
       } catch (err) {
-        logger.warn(`[bot:${companyId}] No se pudo obtener la versión de WA; se usa el default de Baileys: ${err.message}`);
+        logger.warn(`[bot] No se pudo obtener la versión de WA; se usa el default de Baileys: ${err.message}`);
       }
 
       const sock = makeWASocket({
@@ -176,8 +190,8 @@ class BotManager {
         getMessage: async () => undefined,
       });
 
-      this.socks.set(companyId, sock);
-      this.stopping.delete(companyId);
+      this.sock = sock;
+      this.stopping = false;
       sock.ev.on('creds.update', saveCreds);
 
       sock.ev.on('connection.update', async (update) => {
@@ -185,50 +199,50 @@ class BotManager {
 
         // ── QR ──────────────────────────────────────────────────────────────────
         if (qr) {
-          logger.info(`[bot:${companyId}] QR generado`);
+          logger.info('[bot] QR generado');
           try {
             const dataUrl = await qrcode.toDataURL(qr);
-            await redis.set(k.qr, dataUrl, 'EX', 180);
-            await redis.set(k.status, 'qr_waiting');
+            await redis.set(K.qr, dataUrl, 'EX', 180);
+            await redis.set(K.status, 'qr_waiting');
           } catch (err) {
-            logger.error(`[bot:${companyId}] Error guardando QR: ${err.message}`);
+            logger.error(`[bot] Error guardando QR: ${err.message}`);
           }
-          this._armPairingTimeout(companyId, sock);
+          this._armPairingTimeout(sock);
         }
 
         // ── Conectado ─────────────────────────────────────────────────────────────
         if (connection === 'open') {
-          logger.info(`[bot:${companyId}] Listo`);
-          this._clearQrTimer(companyId);
-          this.ready.add(companyId);
-          await redis.del(k.qr);
-          await redis.set(k.status, 'ready');
+          logger.info('[bot] Listo');
+          this._clearQrTimer();
+          this.ready = true;
+          await redis.del(K.qr);
+          await redis.set(K.status, 'ready');
         }
 
         // ── Cerrado ───────────────────────────────────────────────────────────────
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const loggedOut = statusCode === DisconnectReason.loggedOut;
-          const intentional = this.stopping.has(companyId);
-          logger.warn(`[bot:${companyId}] Conexión cerrada (code ${statusCode ?? 'n/a'})`);
+          const intentional = this.stopping;
+          logger.warn(`[bot] Conexión cerrada (code ${statusCode ?? 'n/a'})`);
 
-          this.ready.delete(companyId);
-          this.socks.delete(companyId);
-          this._clearQrTimer(companyId);
-          await redis.set(k.status, 'disconnected');
+          this.ready = false;
+          this.sock = null;
+          this._clearQrTimer();
+          await redis.set(K.status, 'disconnected');
 
           if (intentional) {
-            this.stopping.delete(companyId);
-            return; // cierre a propósito (destroyCompany / timeout de vinculación)
+            this.stopping = false;
+            return; // cierre a propósito (destroy / timeout de vinculación)
           }
 
           // LOGOUT = la sesión fue cerrada/invalidada desde el teléfono. Las
-          // credenciales ya no sirven: se limpian. NO se regenera QR solo: el usuario
-          // pulsa "Generar QR" cuando quiera re-vincular.
+          // credenciales ya no sirven: se limpian. NO se regenera QR solo: el
+          // superadmin pulsa "Generar QR" cuando quiera re-vincular.
           if (loggedOut) {
-            this._clearSession(companyId);
-            await redis.del(k.qr);
-            logger.warn(`[bot:${companyId}] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".`);
+            this._clearSession();
+            await redis.del(K.qr);
+            logger.warn('[bot] Sesión cerrada (LOGOUT). Re-vincular pulsando "Generar QR".');
             return;
           }
 
@@ -237,49 +251,45 @@ class BotManager {
           // re-abrirla con las credenciales ya guardadas). Se reconecta de INMEDIATO
           // y sin condiciones (las credenciales acaban de guardarse en creds.update).
           if (statusCode === DisconnectReason.restartRequired) {
-            logger.info(`[bot:${companyId}] Restart requerido (515); reconectando de inmediato...`);
-            this.initCompany(companyId).catch((err) =>
-              logger.error(`[bot:${companyId}] Error en reconexión 515: ${err.message}`)
+            logger.info('[bot] Restart requerido (515); reconectando de inmediato...');
+            this.init().catch((err) =>
+              logger.error(`[bot] Error en reconexión 515: ${err.message}`)
             );
             return;
           }
 
-          await this._scheduleReconnect(companyId);
+          await this._scheduleReconnect();
         }
       });
 
       sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return; // solo mensajes nuevos, no sincronización
         for (const m of messages) {
-          this._handleIncoming(companyId, m).catch((err) =>
-            logger.error(`[bot:${companyId}] Error procesando mensaje: ${err.message}`)
+          this._handleIncoming(m).catch((err) =>
+            logger.error(`[bot] Error procesando mensaje: ${err.message}`)
           );
         }
       });
       // El estado queda en 'connecting' hasta que llegue el QR (qr_waiting) o la
       // conexión abra (ready); si falla, el catch de abajo lo deja 'disconnected'.
     } catch (err) {
-      this.socks.delete(companyId);
-      await redis.set(k.status, 'disconnected').catch(() => {});
+      this.sock = null;
+      await redis.set(K.status, 'disconnected').catch(() => {});
       throw err;
     } finally {
-      this.initializing.delete(companyId);
+      this.initializing = false;
     }
   }
 
-  // Procesa un mensaje entrante: proveedor → cotización/entrega; usuario interno →
-  // flujos pendientes o agente IA. Reutiliza toda la lógica de bot.context/flows.
-  async _handleIncoming(companyId, m) {
+  // Procesa un mensaje entrante. La identificación del remitente y el ruteo por
+  // empresa viven en bot.router.msg.js (el número decide la empresa y el rol).
+  async _handleIncoming(m) {
     if (!m.message || m.key?.fromMe) return;
     const jid = m.key?.remoteJid || '';
     if (jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return;
 
     const text = extractText(m).trim();
     if (!text) return;
-
-    const k = this._keys(companyId);
-    const enabled = await redis.get(k.enabled);
-    if (enabled !== '1') return;
 
     // Número del remitente. Con el nuevo direccionamiento LID de WhatsApp, el jid
     // puede venir como @lid; en ese caso Baileys expone el número real en un campo
@@ -289,89 +299,51 @@ class BotManager {
       senderJid = m.key.remoteJidAlt || m.key.senderPn || m.key.participantAlt || jid;
     }
     const phone = senderJid.split('@')[0].replace(/\D/g, '');
-    logger.info(`[bot:${companyId}] Mensaje de: ${phone}`);
+    logger.info(`[bot] Mensaje de: ${phone}`);
 
-    // Match por número nacional (últimos 10 dígitos): coincide con o sin indicativo.
-    const phoneNat = nationalNumber(phone) || phone;
-
-    // ¿Proveedor registrado y activo?
-    const supplier = await prisma.supplier.findFirst({
-      where: { companyId, activo: true, whatsapp: { contains: phoneNat } },
-    });
-    if (supplier) {
-      const reply = await handleSupplierMessage(text, companyId, supplier.id, supplier.nombre);
-      if (reply) await this._reply(companyId, jid, reply, m);
-      return;
-    }
-
-    // ¿Usuario interno?
-    const user = await prisma.user.findFirst({
-      where: { companyId, whatsapp: { contains: phoneNat }, activo: true },
-      select: { id: true, nombre: true, rol: true },
-    });
-    if (!user) return;
-
-    // ¿Acción pendiente? (aprobar requisición / adjudicar ganador desde WhatsApp)
-    const pending = await botFlows.getPending(companyId, user.id);
-    if (pending) {
-      const reply = await botFlows.handlePendingReply(
-        text,
-        companyId,
-        { id: user.id, rol: user.rol, nombre: user.nombre, phone },
-        pending
-      );
-      if (reply) await this._reply(companyId, jid, reply, m);
-      return;
-    }
-
-    const reply = await buildResponse(text, companyId, { id: user.id, rol: user.rol });
-    if (reply) await this._reply(companyId, jid, reply, m);
+    const reply = await routeIncoming(text, phone);
+    if (reply) await this._reply(jid, reply, m);
   }
 
   // Responde citando el mensaje original.
-  async _reply(companyId, jid, text, quoted) {
-    const sock = this.socks.get(companyId);
-    if (!sock) return;
-    await sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+  async _reply(jid, text, quoted) {
+    if (!this.sock) return;
+    await this.sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
   }
 
-  // Detiene el bot de una empresa SIN invalidar la sesión (se puede reconectar
-  // luego sin re-escanear). Para invalidar del todo, el usuario cierra sesión
-  // desde el teléfono (eso dispara LOGOUT y limpia la sesión).
-  async destroyCompany(companyId) {
-    const timer = this.retryTimers.get(companyId);
-    if (timer) { clearTimeout(timer); this.retryTimers.delete(companyId); }
-    this._clearQrTimer(companyId);
-    const k = this._keys(companyId);
+  // Detiene el bot SIN invalidar la sesión (se puede reconectar luego sin
+  // re-escanear). Para invalidar del todo, se cierra sesión desde el teléfono
+  // (eso dispara LOGOUT y limpia la sesión).
+  async destroy() {
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    this._clearQrTimer();
 
-    const sock = this.socks.get(companyId);
-    if (sock) {
-      this.stopping.add(companyId);
-      try { sock.end(undefined); } catch {}
+    if (this.sock) {
+      this.stopping = true;
+      try { this.sock.end(undefined); } catch {}
     }
-    this.ready.delete(companyId);
-    this.socks.delete(companyId);
+    this.ready = false;
+    this.sock = null;
     // Limpiar QR y estado aunque no hubiera cliente vivo en este worker, para que
     // el panel superadmin refleje el cambio de inmediato.
-    await redis.del(k.qr);
-    await redis.set(k.status, 'disconnected');
-    logger.info(`[bot:${companyId}] Destruido`);
+    await redis.del(K.qr);
+    await redis.set(K.status, 'disconnected');
+    logger.info('[bot] Destruido');
   }
 
-  // Envía un mensaje de texto en nombre de una empresa.
+  // Envía un mensaje de texto. El companyId es solo trazabilidad (la sesión es
+  // única); el gate por empresa (flag enabled) lo aplica sendQueue antes de llegar acá.
   async sendMessage(companyId, phone, text) {
-    const sock = this.socks.get(companyId);
-    if (!sock) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
-    if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    return sock.sendMessage(jidFor(phone), { text });
+    if (!this.sock) throw new Error('Sin cliente WhatsApp activo');
+    if (!this.ready) throw new Error('Cliente WhatsApp aún no está listo');
+    return this.sock.sendMessage(jidFor(phone), { text });
   }
 
-  // Envía un documento (PDF en base64) en nombre de una empresa.
+  // Envía un documento (PDF en base64).
   async sendDocument(companyId, phone, base64, filename, caption) {
-    const sock = this.socks.get(companyId);
-    if (!sock) throw new Error(`Sin cliente WhatsApp activo para empresa ${companyId}`);
-    if (!this.ready.has(companyId)) throw new Error(`Cliente WhatsApp de empresa ${companyId} aún no está listo`);
-    return sock.sendMessage(jidFor(phone), {
+    if (!this.sock) throw new Error('Sin cliente WhatsApp activo');
+    if (!this.ready) throw new Error('Cliente WhatsApp aún no está listo');
+    return this.sock.sendMessage(jidFor(phone), {
       document: Buffer.from(base64, 'base64'),
       mimetype: 'application/pdf',
       fileName: filename || 'documento.pdf',
@@ -379,27 +351,20 @@ class BotManager {
     });
   }
 
-  // Re-inicializa al arrancar el worker SOLO las empresas que ya tienen sesión
-  // vinculada. Una empresa "enabled" pero sin sesión (nunca vinculó) NO se revive.
-  async restoreActiveSessions() {
-    const keys = await redis.keys('whatsapp:*:enabled');
-    let restored = 0;
-    for (const key of keys) {
-      const val = await redis.get(key);
-      if (val !== '1') continue;
-      const companyId = key.split(':')[1];
-      if (!this._hasSession(companyId)) {
-        logger.warn(`[bot] ${companyId} habilitado pero sin sesión guardada; no se restaura (vincúlalo desde el panel).`);
-        continue;
-      }
-      logger.info(`[bot] Restaurando sesión para empresa ${companyId}`);
-      await this.initCompany(companyId);
-      restored += 1;
-      // Escalonar un poco para no abrir todos los sockets a la vez.
-      await new Promise((r) => setTimeout(r, 1500));
+  // Re-inicializa al arrancar el worker si ya hay una sesión vinculada (o una
+  // legacy migrable). Sin sesión no se hace nada: el QR se genera desde el panel.
+  async restoreSession() {
+    this._migrateLegacySession();
+    if (!this._hasSession()) {
+      logger.info('[bot] Sin sesión global guardada; se espera vinculación por QR desde el panel superadmin.');
+      await redis.set(K.status, 'disconnected');
+      return;
     }
-    logger.info(`[bot] Sesiones restauradas: ${restored}`);
+    logger.info('[bot] Restaurando sesión global');
+    await this.init();
   }
 }
 
 module.exports = new BotManager();
+module.exports.GLOBAL_KEYS = K;
+module.exports.enabledKey = enabledKey;

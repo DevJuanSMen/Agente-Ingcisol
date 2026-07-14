@@ -41,9 +41,10 @@ subscribeToCommands(async (cmd) => {
   logger.info('[worker] Comando recibido:', cmd);
   try {
     if (cmd.action === 'init') {
-      await botManager.initCompany(cmd.companyId);
+      // Sesión única global: init/destroy ya no llevan companyId.
+      await botManager.init();
     } else if (cmd.action === 'destroy') {
-      await botManager.destroyCompany(cmd.companyId);
+      await botManager.destroy();
     } else if (cmd.action === 'send_quote_requests') {
       await sendQuoteRequests(cmd.companyId, cmd.quotationId);
     } else if (cmd.action === 'notify_req_for_approval') {
@@ -66,9 +67,9 @@ subscribeToCommands(async (cmd) => {
   }
 });
 
-// Restaura sesiones activas al arrancar
-botManager.restoreActiveSessions().catch((err) =>
-  logger.error('[worker] Error restaurando sesiones:', err.message)
+// Restaura la sesión global al arrancar (si ya fue vinculada por QR)
+botManager.restoreSession().catch((err) =>
+  logger.error('[worker] Error restaurando sesión:', err.message)
 );
 
 // ── Notificar al director una requisición para aprobar ──────────────────────
@@ -354,8 +355,9 @@ async function sendQuoteRequests(companyId, quotationId) {
       `📋 Requisición: *${req.consecutivo}*\n` +
       `🏗️ Proyecto: *${req.project.nombre}*\n` +
       `📅 Fecha límite: *${fechaLimite}*\n\n` +
-      `Por favor responda con el precio unitario de cada ítem que pueda suministrar y el tiempo de entrega.\n` +
-      `_Ej: "Cemento 28000, Arena 45000, Entrega 3 días"_`;
+      `Respóndanos por aquí con el precio de cada material que pueda suministrar y cuándo lo entregaría. ` +
+      `Puede escribir con sus palabras, nuestro asistente entiende.\n` +
+      `_Ej: "el cemento se lo dejo a 28 mil el bulto y se lo entrego el viernes"_`;
 
     // Encolar envío (con delay anti-spam)
     if (supplier.whatsapp) enqueueText(companyId, supplier.whatsapp, msg);
@@ -501,7 +503,7 @@ cron.schedule('0 12 * * 1', async () => {
     const companies = await prisma.company.findMany({ select: { id: true, razonSocial: true } });
     for (const company of companies) {
       const enabled = await redis?.get(`whatsapp:${company.id}:enabled`);
-      if (enabled !== '1') continue;
+      if (enabled === '0') continue; // sin flag = habilitada (exclusión explícita)
 
       const [activas, pendientes] = await Promise.all([
         prisma.purchaseOrder.count({

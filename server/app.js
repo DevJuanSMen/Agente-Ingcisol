@@ -18,12 +18,13 @@ const notificationsRouter = require('./modules/notifications/notifications.route
 const budgetRouter = require('./modules/budget/budget.router');
 const delegationsRouter = require('./modules/delegations/delegations.router');
 const basicPricesRouter = require('./modules/basicprices/basicprices.router');
-const whatsappRouter = require('./modules/whatsapp/whatsapp.router');
 const assistantRouter = require('./modules/assistant/assistant.router');
 const masterImportRouter = require('./modules/masterimport/masterimport.router');
 const permissionsRouter = require('./modules/permissions/permissions.router');
 const adminRouter = require('./modules/admin/admin.router');
 const { ensureSuperadmin } = require('./shared/ensureSuperadmin');
+const { verifyToken } = require('./shared/middleware/auth');
+const { requireSetupComplete } = require('./shared/middleware/onboarding');
 
 const app = express();
 
@@ -49,25 +50,30 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Routers libres durante el onboarding (el wizard los necesita para configurar
+// la empresa: perfil, usuarios, proyectos, presupuesto, proveedores).
 app.use('/api/auth', authRouter);
 app.use('/api/company', companyRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/projects', projectsRouter);
-app.use('/api/apu', apuRouter);
 app.use('/api/suppliers', suppliersRouter);
-app.use('/api/requisitions', requisitionsRouter);
-app.use('/api/quotations', quotationsRouter);
-app.use('/api/orders', ordersRouter);
-app.use('/api/tracking', trackingRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/budget', budgetRouter);
-app.use('/api/delegations', delegationsRouter);
-app.use('/api/basic-prices', basicPricesRouter);
-app.use('/api/whatsapp', whatsappRouter);
-app.use('/api/assistant', assistantRouter);
 app.use('/api/master-import', masterImportRouter);
 app.use('/api/permissions', permissionsRouter);
 app.use('/api/admin', adminRouter);
+
+// Módulos operativos: bloqueados hasta completar la configuración inicial
+// (403 SETUP_INCOMPLETE). verifyToken corre aquí para que el middleware conozca
+// la empresa (los routers lo repiten internamente sin costo).
+app.use('/api/apu', verifyToken, requireSetupComplete, apuRouter);
+app.use('/api/requisitions', verifyToken, requireSetupComplete, requisitionsRouter);
+app.use('/api/quotations', verifyToken, requireSetupComplete, quotationsRouter);
+app.use('/api/orders', verifyToken, requireSetupComplete, ordersRouter);
+app.use('/api/tracking', verifyToken, requireSetupComplete, trackingRouter);
+app.use('/api/delegations', verifyToken, requireSetupComplete, delegationsRouter);
+app.use('/api/basic-prices', verifyToken, requireSetupComplete, basicPricesRouter);
+app.use('/api/assistant', verifyToken, requireSetupComplete, assistantRouter);
 
 // Handler de errores global
 app.use((err, req, res, next) => {

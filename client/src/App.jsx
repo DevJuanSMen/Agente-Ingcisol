@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 
@@ -27,12 +28,43 @@ import SupplierList from './pages/Suppliers/SupplierList';
 import CompanyProfile from './pages/Company/CompanyProfile';
 import UsersSettings from './pages/Settings/UsersSettings';
 import PermissionsSettings from './pages/Settings/PermissionsSettings';
-import WhatsAppBot from './pages/Settings/WhatsAppBot';
 import SuperadminPanel from './pages/Settings/SuperadminPanel';
+import OnboardingWizard from './pages/Onboarding/OnboardingWizard';
+import PendingSetup from './pages/Onboarding/PendingSetup';
 
 function ProtectedRoute({ children }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   return isAuthenticated ? children : <Navigate to="/login" replace />;
+}
+
+function FullScreenLoader() {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}
+
+// Onboarding obligatorio: mientras la empresa no complete la configuración
+// inicial, el director va al wizard y el resto del equipo ve la pantalla de
+// espera. El estado autoritativo viene del backend (refreshUser al montar,
+// para no confiar en el usuario persistido en localStorage).
+function RequireSetup({ children }) {
+  const user = useAuthStore((s) => s.user);
+  const refreshUser = useAuthStore((s) => s.refreshUser);
+
+  useEffect(() => { refreshUser(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!user) return <FullScreenLoader />;
+  if (user.esSuperadmin) return children;
+
+  // Usuario persistido de una versión anterior (sin el campo): esperar el refresh.
+  const company = user.company || {};
+  if (!('setupCompletedAt' in company)) return <FullScreenLoader />;
+
+  if (company.setupCompletedAt) return children;
+  if (user.rol === 'DIRECTOR') return <Navigate to="/onboarding" replace />;
+  return <PendingSetup />;
 }
 
 export default function App() {
@@ -43,10 +75,20 @@ export default function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route
+          path="/onboarding"
+          element={
+            <ProtectedRoute>
+              <OnboardingWizard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/"
           element={
             <ProtectedRoute>
-              <AppShell />
+              <RequireSetup>
+                <AppShell />
+              </RequireSetup>
             </ProtectedRoute>
           }
         >
@@ -76,7 +118,6 @@ export default function App() {
           <Route path="company" element={<CompanyProfile />} />
           <Route path="settings/users" element={<UsersSettings />} />
           <Route path="settings/permissions" element={<PermissionsSettings />} />
-          <Route path="settings/whatsapp" element={<WhatsAppBot />} />
           <Route path="admin" element={<SuperadminPanel />} />
         </Route>
 

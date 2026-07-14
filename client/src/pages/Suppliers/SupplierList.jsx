@@ -130,7 +130,9 @@ function SupplierImportModal({ analysis, activeProject, onClose, onConfirm }) {
   );
 }
 
-export default function SupplierList() {
+// `embedded`: dentro del wizard de onboarding (sin título propio).
+// `onChanged`: avisa al contenedor cuando cambia el directorio de proveedores.
+export default function SupplierList({ embedded = false, onChanged }) {
   const activeProject = useProjectStore((s) => s.activeProject);
   const canCreate = useCan('suppliers', 'crear');
   const canDelete = useCan('suppliers', 'eliminar');
@@ -163,6 +165,7 @@ export default function SupplierList() {
       setShowForm(false);
       setForm(emptyForm);
       load();
+      onChanged?.();
     } catch (err) {
       alert(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -209,6 +212,7 @@ export default function SupplierList() {
       const r = await api.post('/suppliers/import', { suppliers, projectId });
       setAnalysis(null);
       load();
+      onChanged?.();
       alert(`✅ ${r.data.data.message}`);
     } catch (err) {
       alert(err.response?.data?.message || 'Error al importar');
@@ -253,7 +257,7 @@ export default function SupplierList() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">Proveedores</h1>
+          {!embedded && <h1 className="text-xl font-bold text-slate-800">Proveedores</h1>}
           <p className="text-sm text-slate-500 mt-0.5">{data.length} registros</p>
         </div>
         {canEdit && (

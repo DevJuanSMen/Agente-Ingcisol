@@ -10,7 +10,9 @@ const emptyForm = { nombre: '', email: '', password: '', whatsapp: '', rol: 'RES
 
 const fmtCOP = (v) => v ? `$${Number(v).toLocaleString('es-CO')}` : '—';
 
-export default function UsersSettings() {
+// `embedded`: se usa dentro del wizard de onboarding (sin título propio).
+// `onChanged`: avisa al contenedor cuando cambia el equipo (crear/editar/desactivar).
+export default function UsersSettings({ embedded = false, onChanged }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -50,6 +52,7 @@ export default function UsersSettings() {
       }
       setShowForm(false);
       load();
+      onChanged?.();
     } catch (err) {
       alert(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -62,6 +65,7 @@ export default function UsersSettings() {
     try {
       await api.delete(`/users/${id}`);
       load();
+      onChanged?.();
     } catch (err) {
       alert(err.response?.data?.message || 'Error');
     }
@@ -93,7 +97,7 @@ export default function UsersSettings() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">Gestión de Usuarios</h1>
+          {!embedded && <h1 className="text-xl font-bold text-slate-800">Gestión de Usuarios</h1>}
           <p className="text-sm text-slate-500 mt-0.5">{users.length} usuarios</p>
         </div>
         <Button onClick={openCreate}>+ Nuevo usuario</Button>

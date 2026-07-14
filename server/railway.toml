@@ -3,6 +3,9 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-preDeployCommand = "npx prisma db push --skip-generate --accept-data-loss"
+# El backfill de onboarding es idempotente: marca como configuradas las empresas
+# que ya tienen proyectos (para que no caigan al wizard) y normaliza teléfonos.
+# Se corre en cada deploy sin efectos secundarios.
+preDeployCommand = "npx prisma db push --skip-generate --accept-data-loss && node scripts/backfill-onboarding.js"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10

@@ -90,6 +90,54 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'listar_proyectos',
+      description: 'Lista todos los proyectos de la empresa con su estado, contrato y ciudad. Úsalo cuando pregunten por el estado de los proyectos.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'resumen_presupuesto',
+      description: 'Presupuesto del proyecto activo: total, ejecutado, saldo. Con codigoApu devuelve el detalle/saldo de un ítem puntual.',
+      parameters: {
+        type: 'object',
+        properties: {
+          codigoApu: { type: 'string', description: 'código del ítem APU (ej. 1.2.3) si preguntan por un ítem específico' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_proveedores',
+      description: 'Lista los proveedores registrados. Con busqueda filtra por nombre.',
+      parameters: {
+        type: 'object',
+        properties: { busqueda: { type: 'string', description: 'nombre o parte del nombre del proveedor' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_ordenes',
+      description: 'Lista las órdenes de compra activas (emitidas, enviadas o entregadas) con proveedor, monto y fecha de entrega.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_cotizaciones',
+      description: 'Lista las cotizaciones en curso y cuántos proveedores han respondido cada una.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'listar_requisiciones',
       description: 'Lista las requisiciones activas de la empresa.',
       parameters: {
@@ -204,6 +252,23 @@ const execTool = async (name, args, companyId, user) => {
       case 'resumen_estado':
         return await botContext.buildDbContext(companyId);
 
+      case 'listar_proyectos':
+        return await botContext.fetchProjects(companyId);
+
+      case 'resumen_presupuesto':
+        return args.codigoApu
+          ? await botContext.fetchApuDetail(companyId, args.codigoApu)
+          : await botContext.fetchBudgetSummary(companyId);
+
+      case 'listar_proveedores':
+        return await botContext.fetchSuppliers(companyId, args.busqueda || null);
+
+      case 'listar_ordenes':
+        return await botContext.fetchOrders(companyId);
+
+      case 'listar_cotizaciones':
+        return await botContext.fetchQuotes(companyId);
+
       case 'listar_requisiciones': {
         const ids = await projectIdsOf(companyId);
         const estados = args.soloPendientes
@@ -281,16 +346,21 @@ const runAgent = async (text, companyId, user) => {
   const esDirector = ROLES_APRUEBAN.includes(user.rol);
 
   const system =
-    `Eres el agente de compras de PROCURA AI para constructoras colombianas, operando por WhatsApp. Hoy es ${hoy}.\n` +
+    `Eres PROCURA AI, el asistente de compras de una constructora colombiana. Hablas por WhatsApp. Hoy es ${hoy}.\n` +
     `El usuario tiene rol ${user.rol}. ${esDirector ? 'Puede aprobar y rechazar requisiciones.' : 'NO puede aprobar ni rechazar (no es director).'}\n\n` +
-    `Puedes ejecutar acciones reales usando las herramientas disponibles: crear requisiciones, consultar estado de requisiciones y órdenes, listar pendientes, y (si es director) aprobar/rechazar.\n` +
-    `Reglas:\n` +
-    `- Responde SIEMPRE en español, breve y claro, estilo WhatsApp, con *negrillas* para lo importante.\n` +
-    `- Cuando el usuario pida o necesite materiales, usa crear_requisicion.\n` +
-    `- Para consultar "en qué va" una requisición/orden, usa la herramienta de consulta y relata fielmente el resultado; NO inventes datos.\n` +
-    `- Para aprobar/rechazar identifica la requisición por su consecutivo. Si el usuario no es director, explícale que no tiene permiso.\n` +
-    `- Si te falta un dato esencial (ej. el consecutivo), pídelo en vez de adivinar.\n` +
-    `- No prometas acciones que no realizaste con una herramienta.\n\n` +
+    `Tienes herramientas REALES: consultar proyectos, presupuesto y saldos, proveedores, requisiciones, cotizaciones y órdenes; crear requisiciones; y (si es director) aprobar/rechazar. Úsalas siempre que la pregunta toque datos del sistema.\n\n` +
+    `Estilo:\n` +
+    `- Español colombiano cercano y natural, como un colega eficiente: "listo", "de una", "te cuento". Nunca robótico.\n` +
+    `- Mensajes cortos, estilo WhatsApp: frases directas, *negrillas* para lo importante, emojis con moderación (máximo 1-2).\n` +
+    `- PROHIBIDO responder con menús de comandos o listas de "opciones disponibles". Responde la pregunta y ya.\n` +
+    `- Si la pregunta es ambigua o falta un dato esencial (ej. el consecutivo), pregunta conversacionalmente, no con formularios.\n\n` +
+    `Reglas de fondo:\n` +
+    `- NUNCA inventes cifras, estados ni nombres: solo lo que devuelvan las herramientas o los DATOS del sistema.\n` +
+    `- Cuando el usuario pida o necesite materiales ("necesito 50 bultos de cemento"), usa crear_requisicion.\n` +
+    `- Para "cómo van mis proyectos" usa listar_proyectos; para saldos usa resumen_presupuesto (con codigoApu si es un ítem puntual).\n` +
+    `- Si el usuario no es director y pide aprobar/rechazar, explícale con amabilidad que eso le corresponde al director.\n` +
+    `- No prometas acciones que no realizaste con una herramienta.\n` +
+    `- Solo hablas de compras, presupuestos, requisiciones, cotizaciones, órdenes, proveedores y proyectos. Si preguntan otra cosa, redirige con humor ligero.\n\n` +
     `DATOS ACTUALES DEL SISTEMA:\n${context}`;
 
   const messages = [
@@ -298,7 +368,7 @@ const runAgent = async (text, companyId, user) => {
     { role: 'user', content: text },
   ];
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages,
@@ -331,7 +401,7 @@ const runAgent = async (text, companyId, user) => {
     model: 'llama-3.3-70b-versatile',
     messages,
     temperature: 0.2,
-    max_tokens: 500,
+    max_tokens: 700,
   });
   return final.choices[0].message.content || null;
 };

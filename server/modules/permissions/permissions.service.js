@@ -14,7 +14,7 @@ const MODULES = [
   { key: 'delegations', label: 'Delegaciones' },
   { key: 'company', label: 'Empresa' },
   { key: 'users', label: 'Usuarios' },
-  { key: 'whatsapp', label: 'Bot WhatsApp' },
+  // 'whatsapp' se retiró del catálogo: la conexión del bot es global (superadmin).
 ];
 const MODULE_KEYS = MODULES.map((m) => m.key);
 
@@ -33,25 +33,25 @@ const DEFAULT_MATRIX = {
   APOYO_DIRECTOR: {
     requisitions: ALL, quotations: ALL, orders: ALL, tracking: VIEW,
     suppliers: ALL, budget: ALL, projects: ALL, delegations: ALL,
-    company: VIEW, users: NONE, whatsapp: VIEW,
+    company: VIEW, users: NONE,
   },
   RESIDENTE: {
     requisitions: { ver: true, crear: true, editar: true, eliminar: false },
     quotations: NONE, orders: NONE, tracking: VIEW,
     suppliers: NONE, budget: NONE, projects: VIEW, delegations: VIEW,
-    company: NONE, users: NONE, whatsapp: NONE,
+    company: NONE, users: NONE,
   },
   ALMACENISTA: {
     requisitions: { ver: true, crear: true, editar: false, eliminar: false },
     quotations: NONE, orders: NONE, tracking: VIEW,
     suppliers: NONE, budget: NONE, projects: VIEW, delegations: VIEW,
-    company: NONE, users: NONE, whatsapp: NONE,
+    company: NONE, users: NONE,
   },
   CONTABILIDAD: {
     requisitions: NONE, quotations: NONE,
     orders: { ver: true, crear: false, editar: true, eliminar: false }, tracking: VIEW,
     suppliers: NONE, budget: NONE, projects: VIEW, delegations: NONE,
-    company: NONE, users: NONE, whatsapp: NONE,
+    company: NONE, users: NONE,
   },
 };
 

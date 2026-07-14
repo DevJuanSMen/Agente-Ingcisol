@@ -291,7 +291,9 @@ function ImportModal({ data, onClose, onConfirm }) {
 }
 
 // ── Página ────────────────────────────────────────────────────────────────────
-export default function MasterImport() {
+// `embedded`: dentro del wizard de onboarding (sin título ni botones de navegación).
+// `onChanged`: avisa al contenedor cuando se confirma una importación.
+export default function MasterImport({ embedded = false, onChanged }) {
   const navigate = useNavigate();
   const activeProject = useProjectStore((s) => s.activeProject);
   const [parsing, setParsing] = useState(false);
@@ -321,12 +323,13 @@ export default function MasterImport() {
     const r = await api.post('/master-import/confirm', payload);
     setPreview(null);
     setResult(r.data.data);
+    onChanged?.();
   };
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-slate-800">Importar Presupuesto Maestro</h1>
+        {!embedded && <h1 className="text-xl font-bold text-slate-800">Importar Presupuesto Maestro</h1>}
         <p className="text-sm text-slate-500 mt-0.5">
           {activeProject ? `Proyecto activo: ${activeProject.nombre}` : 'Sin proyecto activo'}
         </p>
@@ -369,10 +372,12 @@ export default function MasterImport() {
             <p className="text-sm text-slate-500 mb-4">
               {result.counts.apu} ítems APU y {result.counts.basicos} precios básicos guardados en <b>{result.proyecto}</b>
             </p>
-            <div className="flex items-center justify-center gap-2">
-              <Button variant="secondary" onClick={() => navigate('/apu')}>Ver APU</Button>
-              <Button variant="secondary" onClick={() => navigate('/basic-prices')}>Ver Básicos</Button>
-            </div>
+            {!embedded && (
+              <div className="flex items-center justify-center gap-2">
+                <Button variant="secondary" onClick={() => navigate('/apu')}>Ver APU</Button>
+                <Button variant="secondary" onClick={() => navigate('/basic-prices')}>Ver Básicos</Button>
+              </div>
+            )}
           </div>
         </Card>
       )}

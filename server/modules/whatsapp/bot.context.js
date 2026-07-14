@@ -8,235 +8,221 @@ const requisitionsService = require('../requisitions/requisitions.service');
 const fmt = (n) =>
   new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(Number(n) || 0);
 
-// ── Comandos de usuario ─────────────────────────────────────────────────────
+// ── Consultas de datos (reutilizadas por comandos exactos y por el agente IA) ──
+
+const fetchProjects = async (companyId) => {
+  const projects = await prisma.project.findMany({
+    where: { companyId },
+    select: { nombre: true, estado: true, activo: true, contratoNo: true, ciudad: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!projects.length) return 'No hay proyectos registrados.';
+  const lines = projects.map(
+    (p) => `${p.activo ? '🟢' : '⚪'} *${p.nombre}* (${p.contratoNo})${p.ciudad ? ` — ${p.ciudad}` : ''} — ${p.estado.replace(/_/g, ' ')}`
+  );
+  return `*Proyectos (${projects.length})*\n\n${lines.join('\n')}`;
+};
+
+const fetchBudgetSummary = async (companyId) => {
+  const project = await prisma.project.findFirst({
+    where: { companyId, activo: true },
+    include: { itemsAPU: true },
+  });
+  if (!project) return 'No hay proyecto activo.';
+  const total = project.itemsAPU.reduce((a, i) => a + Number(i.cantidad) * Number(i.precioUnitario), 0);
+  const saldo = project.itemsAPU.reduce((a, i) => a + Number(i.saldoValor), 0);
+  const ejecutado = total - saldo;
+  const pct = total > 0 ? Math.round((ejecutado / total) * 100) : 0;
+  return (
+    `*Presupuesto — ${project.nombre}*\n\n` +
+    `💰 Total: ${fmt(total)}\n` +
+    `✅ Ejecutado: ${fmt(ejecutado)} (${pct}%)\n` +
+    `📊 Saldo: ${fmt(saldo)}\n` +
+    `📐 Ítems APU: ${project.itemsAPU.length}`
+  );
+};
+
+const fetchApuList = async (companyId) => {
+  const items = await prisma.itemAPU.findMany({
+    where: { project: { companyId, activo: true } },
+    orderBy: { codigo: 'asc' },
+    take: 15,
+  });
+  if (!items.length) return 'No hay ítems APU en el proyecto activo.';
+  const lines = items.map(
+    (i) => `• *${i.codigo}* ${i.descripcion.slice(0, 40)} — ${i.unidad} @ ${fmt(i.precioUnitario)}`
+  );
+  return `*Ítems APU (primeros ${items.length})*\n\n${lines.join('\n')}\n\n_Escribe "apu <código>" para ver detalle._`;
+};
+
+const fetchApuDetail = async (companyId, code) => {
+  const item = await prisma.itemAPU.findFirst({
+    where: { project: { companyId, activo: true }, codigo: { contains: code, mode: 'insensitive' } },
+  });
+  if (!item) return `No encontré el ítem APU con código _"${code}"_.`;
+  return (
+    `*APU ${item.codigo}*\n\n` +
+    `📝 ${item.descripcion}\n` +
+    `📏 Unidad: ${item.unidad}\n` +
+    `🔢 Cantidad: ${Number(item.cantidad)}\n` +
+    `💲 Precio unitario: ${fmt(item.precioUnitario)}\n` +
+    `💰 Valor total: ${fmt(Number(item.cantidad) * Number(item.precioUnitario))}\n` +
+    `📊 Saldo: ${fmt(item.saldoValor)}`
+  );
+};
+
+const fetchSuppliers = async (companyId, busqueda) => {
+  const where = { companyId, activo: true };
+  if (busqueda) where.nombre = { contains: busqueda, mode: 'insensitive' };
+  const suppliers = await prisma.supplier.findMany({
+    where,
+    orderBy: { nombre: 'asc' },
+    take: busqueda ? 5 : 20,
+  });
+  if (!suppliers.length) {
+    return busqueda ? `No encontré proveedores con nombre _"${busqueda}"_.` : 'No hay proveedores registrados.';
+  }
+  if (busqueda) {
+    const lines = suppliers.map(
+      (s) =>
+        `• *${s.nombre}*\n  Segmento: ${s.segmento} | Ciudad: ${s.ciudad || 'N/D'}\n  📱 ${s.whatsapp || 'Sin WhatsApp'} | ✉️ ${s.email || 'Sin email'}`
+    );
+    return `*Resultados para "${busqueda}"*\n\n${lines.join('\n\n')}`;
+  }
+  const lines = suppliers.map(
+    (s) =>
+      `• *${s.nombre}*${s.ciudad ? ` (${s.ciudad})` : ''} — ${s.segmento}${s.whatsapp ? ` 📱${s.whatsapp}` : ''}`
+  );
+  return `*Proveedores (${suppliers.length})*\n\n${lines.join('\n')}`;
+};
+
+const fetchBasicPrices = async (companyId) => {
+  const items = await prisma.basicPrice.findMany({
+    where: { companyId },
+    orderBy: { codigo: 'asc' },
+    take: 15,
+  });
+  if (!items.length) return 'No hay precios básicos registrados.';
+  const lines = items.map(
+    (b) => `• *${b.codigo}* ${b.descripcion.slice(0, 40)} — ${b.unidad} @ ${fmt(b.precioUnitario)}`
+  );
+  return `*Precios Básicos (${items.length})*\n\n${lines.join('\n')}`;
+};
+
+const fetchRequisitions = async (companyId) => {
+  const reqs = await prisma.requisition.findMany({
+    where: {
+      project: { companyId },
+      estado: { in: ['ENVIADA', 'PENDIENTE_JUST', 'EN_COTIZACION'] },
+    },
+    include: { project: { select: { nombre: true } }, solicitante: { select: { nombre: true } } },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+  if (!reqs.length) return 'No hay requisiciones pendientes.';
+  const lines = reqs.map(
+    (r) => `• *${r.consecutivo}* — ${r.estado.replace(/_/g, ' ')}\n  📁 ${r.project.nombre} | 👤 ${r.solicitante.nombre}`
+  );
+  return `*Requisiciones activas (${reqs.length})*\n\n${lines.join('\n\n')}`;
+};
+
+const fetchOrders = async (companyId) => {
+  const orders = await prisma.purchaseOrder.findMany({
+    where: {
+      estado: { in: ['EMITIDA', 'ENVIADA', 'ENTREGADA'] },
+      quotation: { requisition: { project: { companyId } } },
+    },
+    include: { proveedor: { select: { nombre: true } } },
+    orderBy: { fechaEmision: 'desc' },
+    take: 10,
+  });
+  if (!orders.length) return 'No hay órdenes de compra activas.';
+  const lines = orders.map(
+    (o) =>
+      `• *${o.consecutivo}* — ${o.estado} — ${fmt(o.montoTotal)}\n  🏭 ${o.proveedor.nombre}${o.fechaEntregaPactada ? ` | Entrega: ${new Date(o.fechaEntregaPactada).toLocaleDateString('es-CO')}` : ''}`
+  );
+  return `*Órdenes de compra (${orders.length})*\n\n${lines.join('\n\n')}`;
+};
+
+const fetchQuotes = async (companyId) => {
+  const quotes = await prisma.quotation.findMany({
+    where: {
+      estado: { in: ['EN_BUSQUEDA', 'PENDIENTE_APROBACION'] },
+      requisition: { project: { companyId } },
+    },
+    include: {
+      requisition: { select: { consecutivo: true } },
+      invites: { include: { supplier: { select: { nombre: true } } } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+  if (!quotes.length) return 'No hay cotizaciones en curso.';
+  const lines = quotes.map((q) => {
+    const respondidos = q.invites.filter((i) => i.respondido).length;
+    return `• Cotiz. de *${q.requisition.consecutivo}* — ${q.estado.replace(/_/g, ' ')}\n  ${respondidos}/${q.invites.length} proveedores han respondido`;
+  });
+  return `*Cotizaciones en curso (${quotes.length})*\n\n${lines.join('\n\n')}`;
+};
+
+const fetchStatus = async (companyId) => {
+  const [totalProyectos, reqPendientes, ocActivas, cotActivas] = await Promise.all([
+    prisma.project.count({ where: { companyId } }),
+    prisma.requisition.count({
+      where: { project: { companyId }, estado: { in: ['ENVIADA', 'PENDIENTE_JUST'] } },
+    }),
+    prisma.purchaseOrder.count({
+      where: { estado: { in: ['EMITIDA', 'ENVIADA'] }, quotation: { requisition: { project: { companyId } } } },
+    }),
+    prisma.quotation.count({
+      where: { estado: { in: ['EN_BUSQUEDA', 'PENDIENTE_APROBACION'] }, requisition: { project: { companyId } } },
+    }),
+  ]);
+  const activeProject = await prisma.project.findFirst({
+    where: { companyId, activo: true },
+    select: { nombre: true },
+  });
+  return (
+    `*Estado PROCURA AI*\n\n` +
+    `🏗️ Proyecto activo: ${activeProject?.nombre || 'Ninguno'}\n` +
+    `📁 Total proyectos: ${totalProyectos}\n` +
+    `📋 Req. pendientes de aprobación: ${reqPendientes}\n` +
+    `💬 Cotizaciones en curso: ${cotActivas}\n` +
+    `📦 OC activas: ${ocActivas}`
+  );
+};
+
+// ── Comandos EXACTOS (atajos instantáneos, sin gastar tokens) ────────────────
+// Solo palabras exactas o prefijos "apu <código>" / "proveedor <nombre>".
+// Todo lo demás (frases naturales) va SIEMPRE al agente IA — no se secuestran
+// frases con includes() como antes.
 
 const handleCommand = async (t, companyId, rol) => {
   if (t === 'ayuda' || t === 'help' || t === '?') {
     return (
-      '*PROCURA AI Bot* 🤖\n\n' +
-      'Comandos disponibles:\n' +
-      '• *proyectos* — Lista de proyectos\n' +
-      '• *presupuesto* — Resumen del proyecto activo\n' +
-      '• *apu <código>* — Detalle ítem APU\n' +
-      '• *apus* — Primeros 10 ítems APU\n' +
-      '• *básicos* — Precios básicos\n' +
-      '• *proveedores* — Lista de proveedores\n' +
-      '• *proveedor <nombre>* — Buscar proveedor\n' +
-      '• *requisiciones* — Requisiciones pendientes\n' +
-      '• *ordenes* — Órdenes de compra activas\n' +
-      '• *cotizaciones* — Cotizaciones en curso\n' +
-      '• *estado* — Resumen general\n' +
-      '• *ayuda* — Este menú\n\n' +
-      '_También puedes escribir en lenguaje natural._'
+      '*PROCURA AI* 🤖\n\n' +
+      'Escríbeme como le escribirías a una persona, yo entiendo. Por ejemplo:\n' +
+      '• _"dame el estado de mis proyectos"_\n' +
+      '• _"¿cuánto presupuesto queda?"_\n' +
+      '• _"necesito 50 bultos de cemento para el viernes"_\n' +
+      '• _"¿en qué va la REQ-2026-003?"_\n' +
+      '• _"aprueba la última requisición"_\n\n' +
+      'También tengo atajos rápidos: *estado*, *proyectos*, *presupuesto*, *requisiciones*, ' +
+      '*cotizaciones*, *ordenes*, *proveedores*, *apus*, *básicos*.'
     );
   }
 
-  // ── Proyectos ──────────────────────────────────────────────────────────
-  if (t === 'proyectos' || t.includes('cuántos proyecto') || t.includes('cuantos proyecto')) {
-    const projects = await prisma.project.findMany({
-      where: { companyId },
-      select: { nombre: true, estado: true, activo: true, contratoNo: true, ciudad: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!projects.length) return 'No hay proyectos registrados.';
-    const lines = projects.map(
-      (p) => `${p.activo ? '🟢' : '⚪'} *${p.nombre}* (${p.contratoNo})${p.ciudad ? ` — ${p.ciudad}` : ''} — ${p.estado.replace(/_/g, ' ')}`
-    );
-    return `*Proyectos (${projects.length})*\n\n${lines.join('\n')}`;
-  }
-
-  // ── Presupuesto ────────────────────────────────────────────────────────
-  if (t === 'presupuesto' || t.includes('presupuesto')) {
-    const project = await prisma.project.findFirst({
-      where: { companyId, activo: true },
-      include: { itemsAPU: true },
-    });
-    if (!project) return 'No hay proyecto activo.';
-    const total = project.itemsAPU.reduce((a, i) => a + Number(i.cantidad) * Number(i.precioUnitario), 0);
-    const saldo = project.itemsAPU.reduce((a, i) => a + Number(i.saldoValor), 0);
-    const ejecutado = total - saldo;
-    const pct = total > 0 ? Math.round((ejecutado / total) * 100) : 0;
-    return (
-      `*Presupuesto — ${project.nombre}*\n\n` +
-      `💰 Total: ${fmt(total)}\n` +
-      `✅ Ejecutado: ${fmt(ejecutado)} (${pct}%)\n` +
-      `📊 Saldo: ${fmt(saldo)}\n` +
-      `📐 Ítems APU: ${project.itemsAPU.length}`
-    );
-  }
-
-  // ── APU ────────────────────────────────────────────────────────────────
-  if (t === 'apus' || t === 'lista apu' || t === 'listar apu') {
-    const items = await prisma.itemAPU.findMany({
-      where: { project: { companyId, activo: true } },
-      orderBy: { codigo: 'asc' },
-      take: 15,
-    });
-    if (!items.length) return 'No hay ítems APU en el proyecto activo.';
-    const lines = items.map(
-      (i) => `• *${i.codigo}* ${i.descripcion.slice(0, 40)} — ${i.unidad} @ ${fmt(i.precioUnitario)}`
-    );
-    return `*Ítems APU (primeros ${items.length})*\n\n${lines.join('\n')}\n\n_Escribe "apu <código>" para ver detalle._`;
-  }
-
-  if (t.startsWith('apu ')) {
-    const code = t.replace(/^apu\s+/, '').trim();
-    const item = await prisma.itemAPU.findFirst({
-      where: { project: { companyId, activo: true }, codigo: { contains: code, mode: 'insensitive' } },
-    });
-    if (!item) return `No encontré el ítem APU con código _"${code}"_.`;
-    return (
-      `*APU ${item.codigo}*\n\n` +
-      `📝 ${item.descripcion}\n` +
-      `📏 Unidad: ${item.unidad}\n` +
-      `🔢 Cantidad: ${Number(item.cantidad)}\n` +
-      `💲 Precio unitario: ${fmt(item.precioUnitario)}\n` +
-      `💰 Valor total: ${fmt(Number(item.cantidad) * Number(item.precioUnitario))}\n` +
-      `📊 Saldo: ${fmt(item.saldoValor)}`
-    );
-  }
-
-  // ── Proveedores ────────────────────────────────────────────────────────
-  if (t === 'proveedores' || t === 'lista proveedores') {
-    const suppliers = await prisma.supplier.findMany({
-      where: { companyId, activo: true },
-      orderBy: { nombre: 'asc' },
-      take: 20,
-    });
-    if (!suppliers.length) return 'No hay proveedores registrados.';
-    const lines = suppliers.map(
-      (s) =>
-        `• *${s.nombre}*${s.ciudad ? ` (${s.ciudad})` : ''} — ${s.segmento}${s.whatsapp ? ` 📱${s.whatsapp}` : ''}`
-    );
-    return `*Proveedores (${suppliers.length})*\n\n${lines.join('\n')}`;
-  }
-
-  if (t.startsWith('proveedor ')) {
-    const q = t.replace(/^proveedor\s+/, '').trim();
-    const results = await prisma.supplier.findMany({
-      where: { companyId, activo: true, nombre: { contains: q, mode: 'insensitive' } },
-      take: 5,
-    });
-    if (!results.length) return `No encontré proveedores con nombre _"${q}"_.`;
-    const lines = results.map(
-      (s) =>
-        `• *${s.nombre}*\n  Segmento: ${s.segmento} | Ciudad: ${s.ciudad || 'N/D'}\n  📱 ${s.whatsapp || 'Sin WhatsApp'} | ✉️ ${s.email || 'Sin email'}`
-    );
-    return `*Resultados para "${q}"*\n\n${lines.join('\n\n')}`;
-  }
-
-  // ── Precios básicos ────────────────────────────────────────────────────
-  if (t === 'básicos' || t === 'basicos' || t === 'precios basicos' || t === 'precios básicos') {
-    const items = await prisma.basicPrice.findMany({
-      where: { companyId },
-      orderBy: { codigo: 'asc' },
-      take: 15,
-    });
-    if (!items.length) return 'No hay precios básicos registrados.';
-    const lines = items.map(
-      (b) => `• *${b.codigo}* ${b.descripcion.slice(0, 40)} — ${b.unidad} @ ${fmt(b.precioUnitario)}`
-    );
-    return `*Precios Básicos (${items.length})*\n\n${lines.join('\n')}`;
-  }
-
-  // ── Requisiciones ──────────────────────────────────────────────────────
-  if (t === 'requisiciones' || t === 'requisicion' || t.includes('requisicion')) {
-    const projects = await prisma.project.findMany({
-      where: { companyId },
-      select: { id: true },
-    });
-    const projectIds = projects.map((p) => p.id);
-    const reqs = await prisma.requisition.findMany({
-      where: {
-        projectId: { in: projectIds },
-        estado: { in: ['ENVIADA', 'PENDIENTE_JUST', 'EN_COTIZACION'] },
-      },
-      include: { project: { select: { nombre: true } }, solicitante: { select: { nombre: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
-    if (!reqs.length) return 'No hay requisiciones pendientes.';
-    const lines = reqs.map(
-      (r) => `• *${r.consecutivo}* — ${r.estado.replace(/_/g, ' ')}\n  📁 ${r.project.nombre} | 👤 ${r.solicitante.nombre}`
-    );
-    return `*Requisiciones activas (${reqs.length})*\n\n${lines.join('\n\n')}`;
-  }
-
-  // ── Órdenes de compra ──────────────────────────────────────────────────
-  if (t === 'ordenes' || t === 'orden' || t === 'oc' || t.includes('orden de compra')) {
-    const projects = await prisma.project.findMany({
-      where: { companyId },
-      select: { id: true },
-    });
-    const projectIds = projects.map((p) => p.id);
-    const orders = await prisma.purchaseOrder.findMany({
-      where: {
-        estado: { in: ['EMITIDA', 'ENVIADA', 'ENTREGADA'] },
-        quotation: { requisition: { projectId: { in: projectIds } } },
-      },
-      include: { proveedor: { select: { nombre: true } } },
-      orderBy: { fechaEmision: 'desc' },
-      take: 10,
-    });
-    if (!orders.length) return 'No hay órdenes de compra activas.';
-    const lines = orders.map(
-      (o) =>
-        `• *${o.consecutivo}* — ${o.estado} — ${fmt(o.montoTotal)}\n  🏭 ${o.proveedor.nombre}${o.fechaEntregaPactada ? ` | Entrega: ${new Date(o.fechaEntregaPactada).toLocaleDateString('es-CO')}` : ''}`
-    );
-    return `*Órdenes de compra (${orders.length})*\n\n${lines.join('\n\n')}`;
-  }
-
-  // ── Cotizaciones ───────────────────────────────────────────────────────
-  if (t === 'cotizaciones' || t === 'cotizacion') {
-    const projects = await prisma.project.findMany({ where: { companyId }, select: { id: true } });
-    const projectIds = projects.map((p) => p.id);
-    const quotes = await prisma.quotation.findMany({
-      where: {
-        estado: { in: ['EN_BUSQUEDA', 'PENDIENTE_APROBACION'] },
-        requisition: { projectId: { in: projectIds } },
-      },
-      include: {
-        requisition: { select: { consecutivo: true } },
-        invites: { include: { supplier: { select: { nombre: true } } } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
-    if (!quotes.length) return 'No hay cotizaciones en curso.';
-    const lines = quotes.map((q) => {
-      const respondidos = q.invites.filter((i) => i.respondido).length;
-      return `• Cotiz. de *${q.requisition.consecutivo}* — ${q.estado.replace(/_/g, ' ')}\n  ${respondidos}/${q.invites.length} proveedores han respondido`;
-    });
-    return `*Cotizaciones en curso (${quotes.length})*\n\n${lines.join('\n\n')}`;
-  }
-
-  // ── Estado general ─────────────────────────────────────────────────────
-  if (t === 'estado') {
-    const [totalProyectos, reqPendientes, ocActivas, cotActivas] = await Promise.all([
-      prisma.project.count({ where: { companyId } }),
-      prisma.requisition.count({
-        where: { project: { companyId }, estado: { in: ['ENVIADA', 'PENDIENTE_JUST'] } },
-      }),
-      prisma.purchaseOrder.count({
-        where: { estado: { in: ['EMITIDA', 'ENVIADA'] }, quotation: { requisition: { project: { companyId } } } },
-      }),
-      prisma.quotation.count({
-        where: { estado: { in: ['EN_BUSQUEDA', 'PENDIENTE_APROBACION'] }, requisition: { project: { companyId } } },
-      }),
-    ]);
-    const activeProject = await prisma.project.findFirst({
-      where: { companyId, activo: true },
-      select: { nombre: true },
-    });
-    return (
-      `*Estado PROCURA AI*\n\n` +
-      `🏗️ Proyecto activo: ${activeProject?.nombre || 'Ninguno'}\n` +
-      `📁 Total proyectos: ${totalProyectos}\n` +
-      `📋 Req. pendientes de aprobación: ${reqPendientes}\n` +
-      `💬 Cotizaciones en curso: ${cotActivas}\n` +
-      `📦 OC activas: ${ocActivas}`
-    );
-  }
+  if (t === 'proyectos') return fetchProjects(companyId);
+  if (t === 'presupuesto') return fetchBudgetSummary(companyId);
+  if (t === 'apus' || t === 'lista apu' || t === 'listar apu') return fetchApuList(companyId);
+  if (t.startsWith('apu ')) return fetchApuDetail(companyId, t.replace(/^apu\s+/, '').trim());
+  if (t === 'proveedores' || t === 'lista proveedores') return fetchSuppliers(companyId);
+  if (t.startsWith('proveedor ')) return fetchSuppliers(companyId, t.replace(/^proveedor\s+/, '').trim());
+  if (t === 'básicos' || t === 'basicos' || t === 'precios basicos' || t === 'precios básicos') return fetchBasicPrices(companyId);
+  if (t === 'requisiciones' || t === 'requisicion') return fetchRequisitions(companyId);
+  if (t === 'ordenes' || t === 'órdenes' || t === 'orden' || t === 'oc') return fetchOrders(companyId);
+  if (t === 'cotizaciones' || t === 'cotizacion') return fetchQuotes(companyId);
+  if (t === 'estado') return fetchStatus(companyId);
 
   return null;
 };
@@ -310,10 +296,60 @@ const buildDbContext = async (companyId) => {
 
 // ── Manejo de respuestas de proveedores ─────────────────────────────────────
 
+const { logParse } = require('./bot.parselog');
+const { similarity, bestMatch } = require('../../shared/utils/fuzzy');
+
+// Llamada a Groq que DEBE devolver JSON. Si el primer intento devuelve algo
+// no parseable (o falla), reintenta UNA vez con temperature 0 y recordatorio
+// estricto. Si aun así falla, lanza y el caller responde en tono natural.
+const groqJson = async ({ system, user, maxTokens = 800 }) => {
+  const { getGroq } = require('../../shared/utils/groq');
+  const groq = getGroq();
+  const ask = async (temperature, extraSystem) => {
+    const c = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: extraSystem ? `${system}\n\n${extraSystem}` : system },
+        { role: 'user', content: user },
+      ],
+      temperature,
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
+    });
+    return c.choices[0].message.content;
+  };
+  try {
+    return JSON.parse(await ask(0.1));
+  } catch (err) {
+    logger.warn(`[bot.context] Primer intento de JSON falló (${err.message}); reintentando estricto`);
+  }
+  return JSON.parse(await ask(0, 'IMPORTANTE: responde ÚNICAMENTE el objeto JSON válido, sin ningún texto adicional.'));
+};
+
+// Confirmación de lectura pendiente ("¿Correcto?") tras registrar cotización o
+// entrega. Si el proveedor afirma, se agradece; si corrige, se re-parsea (el
+// upsert actualiza sin duplicar).
+const qconfirmKey = (companyId, supplierId) => `whatsapp:qconfirm:${companyId}:${supplierId}`;
+const QCONFIRM_TTL = 60 * 60 * 24;
+const AFFIRM_RE = /^(s[ií]+( se(ñ|n)or(a)?)?|correcto|ok(ay)?|listo|dale|va|perfecto|as[ií] es|exacto|de acuerdo|confirmado|todo bien|est[aá] bien)[.!👍🙏\s]*$/i;
+
+const fmtFechaCorta = (d) =>
+  new Date(d).toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'short' });
+
 // Punto de entrada: decide si el mensaje del proveedor es una cotización (precios)
 // o una respuesta sobre una orden de compra (confirmación / fecha de entrega).
 const handleSupplierMessage = async (text, companyId, supplierId, supplierName) => {
   logger.info(`[bot.context] Mensaje de proveedor ${supplierName}: "${text.slice(0, 80)}"`);
+
+  // ¿Hay un "¿Correcto?" pendiente? Afirmación → cerrar; otra cosa → tratar
+  // como corrección/mensaje nuevo (se limpia el estado y sigue el flujo).
+  const pendingConfirm = await redis.get(qconfirmKey(companyId, supplierId)).catch(() => null);
+  if (pendingConfirm) {
+    await redis.del(qconfirmKey(companyId, supplierId)).catch(() => {});
+    if (AFFIRM_RE.test(text.trim())) {
+      return `¡Perfecto, *${supplierName}*! Quedó registrado. Cualquier cambio me escribes por aquí. 🙌`;
+    }
+  }
 
   // Contexto A: cotización abierta donde fue invitado (permite re-cotizar/corregir).
   const invite = await prisma.quotationInvite.findFirst({
@@ -352,224 +388,314 @@ const handleSupplierMessage = async (text, companyId, supplierId, supplierName) 
 
   // Un solo contexto → ruta directa. Con ambos, la IA decide la intención.
   if (invite && !activePO) return handleSupplierQuote(text, companyId, supplierId, supplierName, invite);
-  if (activePO && !invite) return handleSupplierDelivery(text, companyId, supplierName, activePO);
+  if (activePO && !invite) return handleSupplierDelivery(text, companyId, supplierId, supplierName, activePO);
 
-  const intent = await classifySupplierIntent(text);
-  if (intent === 'ENTREGA') return handleSupplierDelivery(text, companyId, supplierName, activePO);
+  const intent = await classifySupplierIntent(text, companyId, supplierId);
+  if (intent === 'ENTREGA') return handleSupplierDelivery(text, companyId, supplierId, supplierName, activePO);
   // COTIZACION o ambiguo: por defecto tratamos como cotización (el parser pedirá
   // precios si no los encuentra), porque tiene una solicitud de precios abierta.
   return handleSupplierQuote(text, companyId, supplierId, supplierName, invite);
 };
 
 // Clasifica la intención cuando el proveedor tiene cotización Y orden activas.
-const classifySupplierIntent = async (text) => {
+// Usa el modelo grande (se invoca poco y el pequeño clasifica mal coloquialismos).
+const classifySupplierIntent = async (text, companyId, supplierId) => {
   try {
-    const { getGroq } = require('../../shared/utils/groq');
-    const groq = getGroq();
-    const c = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
-      messages: [
-        {
-          role: 'system',
-          content: `Clasifica el mensaje de un proveedor en UNA categoría. Responde SOLO JSON {"intent":"COTIZACION|ENTREGA|OTRO"}.
-- COTIZACION: está dando precios o cotizando materiales.
+    const parsed = await groqJson({
+      system: `Clasifica el mensaje de un proveedor colombiano en UNA categoría. Responde SOLO JSON {"intent":"COTIZACION|ENTREGA|OTRO"}.
+- COTIZACION: está dando precios o cotizando materiales (aunque sea coloquial: "te lo dejo en 30", "el bulto sale a 28 mil").
 - ENTREGA: confirma una orden de compra, da/cambia una fecha de entrega, o avisa que ya entregó/despachó.
 - OTRO: saludo u otra cosa.`,
-        },
-        { role: 'user', content: text },
-      ],
-      temperature: 0,
-      max_tokens: 40,
-      response_format: { type: 'json_object' },
+      user: text,
+      maxTokens: 40,
     });
-    return JSON.parse(c.choices[0].message.content).intent || 'OTRO';
-  } catch {
+    const intent = parsed.intent || 'OTRO';
+    await logParse({ companyId, supplierId, contexto: 'INTENT', entrada: text, salida: parsed, exito: true });
+    return intent;
+  } catch (err) {
+    await logParse({ companyId, supplierId, contexto: 'INTENT', entrada: text, exito: false, error: err.message });
     return 'OTRO';
   }
 };
 
-// ── Cotización: parsea precios y los guarda (un ítem por requisición/proveedor) ──
+// ── Cotización: parsea precios en lenguaje natural y los guarda ──────────────
+// Tolera respuestas libres ("tengo el cemento a 30mil para entregártelo el
+// viernes"): el ítem se casa por descripción con match difuso (no se confía
+// ciegamente en el índice del LLM), las fechas relativas se convierten, lo
+// parcial se guarda preguntando solo lo que falta, y todo intento queda en
+// BotParseLog para depurar.
 const handleSupplierQuote = async (text, companyId, supplierId, supplierName, invite) => {
   const quotation = invite.quotation;
   const reqItems = quotation.requisition.items;
+  const hoy = new Date();
+  const hoyISO = hoy.toISOString().slice(0, 10);
 
+  let parsed;
   try {
-    const { getGroq } = require('../../shared/utils/groq');
-    const groq = getGroq();
-    const itemsList = reqItems.map((it, i) => `${i + 1}. ${it.descripcion} (${it.unidad})`).join('\n');
+    const itemsList = reqItems
+      .map((it, i) => `${i}. ${it.descripcion} — ${Number(it.cantidad)} ${it.unidad}`)
+      .join('\n');
 
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        {
-          role: 'system',
-          content: `Eres un asistente de cotizaciones para el sector construcción en Colombia.
-El proveedor respondió a una solicitud de precios. Los ítems solicitados fueron:
+    parsed = await groqJson({
+      system: `Eres un extractor de cotizaciones para construcción en Colombia. Hoy es ${hoyISO}.
+El proveedor responde EN LENGUAJE LIBRE a una solicitud de precios. Ítems solicitados (índice. descripción — cantidad unidad):
 ${itemsList}
 
-Extrae los precios de la respuesta. Responde SOLO con JSON válido:
+Extrae lo que el proveedor cotiza. Responde SOLO JSON válido:
 {
   "items": [
-    {"itemIndex": 0, "descripcion": "...", "precioUnitario": 28000, "tiempoEntregaDias": 3}
+    {
+      "descripcion": "el material tal como lo nombró el proveedor",
+      "itemIndex": 0,
+      "precioUnitario": 30000,
+      "entregaDias": 3,
+      "fechaEntrega": "YYYY-MM-DD"
+    }
   ],
+  "noSuministra": [1],
   "notas": "observación adicional o null"
 }
-Si el proveedor no puede suministrar un ítem, no lo incluyas en items.
-Los precios deben ser en pesos colombianos (COP). Si menciona miles, multiplica (ej: "28 mil" = 28000).`,
-        },
-        { role: 'user', content: text },
-      ],
-      temperature: 0.1,
-      max_tokens: 800,
-      response_format: { type: 'json_object' },
+Reglas:
+- itemIndex: índice del ítem de la lista al que corresponde (0-based), o null si no estás seguro.
+- precioUnitario en COP. "30mil"/"30 mil" = 30000; "1.2 millones" = 1200000. null si no dio precio para ese ítem.
+- entregaDias: días de entrega si los menciona como plazo ("en 3 días"), si no null.
+- fechaEntrega: si menciona una fecha o día ("el viernes", "el 20", "pasado mañana"), conviértela a fecha YYYY-MM-DD respecto a hoy (${hoyISO}); si no, null.
+- noSuministra: índices de ítems que el proveedor dice explícitamente que NO puede suministrar (si no dice nada, []).
+- Incluye en items SOLO lo que realmente cotizó.`,
+      user: text,
+      maxTokens: 900,
+    });
+  } catch (err) {
+    logger.error('[bot.context] Cotización: JSON inválido tras reintento:', err.message);
+    await logParse({ companyId, supplierId, contexto: 'QUOTE', entrada: text, exito: false, error: err.message });
+    return (
+      `Gracias *${supplierName}* 🙏. Recibí tu mensaje pero no logré identificar los precios. ` +
+      `¿Me ayudas diciéndome cuánto vale cada uno? Necesito: ${reqItems.map((i) => i.descripcion).join(', ')}.`
+    );
+  }
+
+  try {
+    const parsedItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const noSuministraIdx = Array.isArray(parsed.noSuministra) ? parsed.noSuministra : [];
+
+    // ── Casar cada ítem extraído con el ítem de requisición correcto ──
+    // El índice del LLM solo se acepta si su descripción también coincide;
+    // si no, gana el mejor match difuso. Nada se descarta en silencio.
+    const reqDescs = reqItems.map((r) => r.descripcion);
+    const matched = []; // { reqItem, precioUnitario, entregaDias }
+    const unmatched = [];
+
+    for (const pi of parsedItems) {
+      const precioUnitario = Number(pi.precioUnitario) || 0;
+      if (precioUnitario <= 0) continue; // sin precio no hay nada que guardar
+
+      let idx = -1;
+      const byIndex = Number.isInteger(pi.itemIndex) && reqItems[pi.itemIndex] ? pi.itemIndex : -1;
+      if (byIndex >= 0 && (!pi.descripcion || similarity(pi.descripcion, reqDescs[byIndex]) >= 0.35)) {
+        idx = byIndex;
+      } else if (pi.descripcion) {
+        idx = bestMatch(pi.descripcion, reqDescs, 0.35);
+      } else {
+        idx = byIndex;
+      }
+
+      if (idx < 0) {
+        unmatched.push(pi.descripcion || '(sin descripción)');
+        continue;
+      }
+
+      // Días de entrega: plazo directo o derivado de la fecha absoluta.
+      let entregaDias = Number(pi.entregaDias) || 0;
+      let fechaEntrega = null;
+      if (pi.fechaEntrega) {
+        const f = new Date(pi.fechaEntrega);
+        if (!Number.isNaN(f.getTime())) {
+          fechaEntrega = f;
+          if (!entregaDias) entregaDias = Math.max(0, Math.ceil((f - hoy) / 86400000));
+        }
+      }
+      matched.push({ reqItem: reqItems[idx], precioUnitario, entregaDias, fechaEntrega });
+    }
+
+    await logParse({
+      companyId,
+      supplierId,
+      contexto: 'QUOTE',
+      entrada: text,
+      salida: { parsed, casados: matched.length, sinCasar: unmatched },
+      exito: matched.length > 0,
+      error: matched.length === 0 ? 'Sin ítems casados' : null,
     });
 
-    let parsed;
-    try {
-      parsed = JSON.parse(completion.choices[0].message.content);
-    } catch {
-      logger.error('[bot.context] Groq devolvió JSON inválido para cotización');
-      return `Gracias ${supplierName}. No pude interpretar su respuesta. Por favor use el formato:\n"Item1: precio, Item2: precio, Entrega: X días"`;
+    if (!matched.length && !noSuministraIdx.length) {
+      return (
+        `Gracias *${supplierName}* 🙏. Leí tu mensaje pero no logré asociar precios a los materiales solicitados` +
+        (unmatched.length ? ` (mencionaste: ${unmatched.join(', ')})` : '') +
+        `. ¿Me confirmas el precio de cada uno? Necesito: ${reqItems.map((i) => i.descripcion).join(', ')}.`
+      );
     }
 
-    const parsedItems = parsed.items || [];
-    if (parsedItems.length === 0) {
-      return `Gracias ${supplierName}. No encontré precios en su respuesta. Por favor indique el precio de cada ítem: ${reqItems.map((i) => i.descripcion).join(', ')}.`;
-    }
-
-    // Guardar los QuotationItem — upsert por (cotización, proveedor, ítem de
-    // requisición): si el proveedor recotiza, ACTUALIZA en vez de duplicar.
+    // ── Guardar (upsert: recotizar corrige, no duplica) ──
     const createdItems = [];
-    for (const pi of parsedItems) {
-      const reqItem = reqItems[pi.itemIndex];
-      if (!reqItem) continue;
-      const cantidad = Number(reqItem.cantidad) || 1;
-      const precioUnitario = Number(pi.precioUnitario) || 0;
-
+    for (const m of matched) {
+      const cantidad = Number(m.reqItem.cantidad) || 1;
       await prisma.quotationItem.upsert({
         where: {
           quotationId_supplierId_requisitionItemId: {
             quotationId: quotation.id,
             supplierId,
-            requisitionItemId: reqItem.id,
+            requisitionItemId: m.reqItem.id,
           },
         },
         update: {
-          precioUnitario,
-          precioTotal: precioUnitario * cantidad,
-          tiempoEntrega: pi.tiempoEntregaDias || 0,
-          itemApuId: reqItem.itemApuId || null,
-          descripcion: reqItem.descripcion,
+          precioUnitario: m.precioUnitario,
+          precioTotal: m.precioUnitario * cantidad,
+          tiempoEntrega: m.entregaDias,
+          itemApuId: m.reqItem.itemApuId || null,
+          descripcion: m.reqItem.descripcion,
           fuente: 'LOCAL',
           confiabilidad: 'LOCAL',
         },
         create: {
           quotationId: quotation.id,
           supplierId,
-          requisitionItemId: reqItem.id,
-          itemApuId: reqItem.itemApuId || null,
-          descripcion: reqItem.descripcion,
-          precioUnitario,
-          precioTotal: precioUnitario * cantidad,
-          tiempoEntrega: pi.tiempoEntregaDias || 0,
+          requisitionItemId: m.reqItem.id,
+          itemApuId: m.reqItem.itemApuId || null,
+          descripcion: m.reqItem.descripcion,
+          precioUnitario: m.precioUnitario,
+          precioTotal: m.precioUnitario * cantidad,
+          tiempoEntrega: m.entregaDias,
           fuente: 'LOCAL',
           confiabilidad: 'LOCAL',
         },
       });
-      createdItems.push({ descripcion: reqItem.descripcion, precioUnitario, cantidad });
+      createdItems.push({
+        descripcion: m.reqItem.descripcion,
+        precioUnitario: m.precioUnitario,
+        cantidad,
+        entregaDias: m.entregaDias,
+        fechaEntrega: m.fechaEntrega,
+      });
     }
 
-    // Marcar invite como respondido
-    await prisma.quotationInvite.update({
-      where: { id: invite.id },
-      data: { respondido: true, respondedAt: new Date() },
+    // ── ¿Cubrió todos los ítems (cotizados ahora + antes + los que no suministra)? ──
+    const cotizados = await prisma.quotationItem.findMany({
+      where: { quotationId: quotation.id, supplierId },
+      select: { requisitionItemId: true },
     });
+    const cubiertos = new Set(cotizados.map((c) => c.requisitionItemId));
+    for (const i of noSuministraIdx) {
+      if (reqItems[i]) cubiertos.add(reqItems[i].id);
+    }
+    const faltantes = reqItems.filter((r) => !cubiertos.has(r.id));
+    const completo = faltantes.length === 0;
 
-    // ¿Ya respondieron todos los proveedores invitados? → avisar al director
-    // por WhatsApp para que adjudique al/los ganador(es).
-    const pendientes = await prisma.quotationInvite.count({
-      where: { quotationId: quotation.id, respondido: false },
-    });
-    if (pendientes === 0) {
-      await publishCommand(redis, 'notify_winner_selection', {
-        companyId,
-        quotationId: quotation.id,
-      }).catch(() => {});
+    if (completo && !invite.respondido) {
+      await prisma.quotationInvite.update({
+        where: { id: invite.id },
+        data: { respondido: true, respondedAt: new Date() },
+      });
+      // ¿Ya respondieron todos los proveedores invitados? → avisar al director
+      // por WhatsApp para que adjudique al/los ganador(es).
+      const pendientes = await prisma.quotationInvite.count({
+        where: { quotationId: quotation.id, respondido: false },
+      });
+      if (pendientes === 0) {
+        await publishCommand(redis, 'notify_winner_selection', {
+          companyId,
+          quotationId: quotation.id,
+        }).catch(() => {});
+      }
     }
 
     // Notificar in-app a directores
-    const directors = await prisma.user.findMany({
-      where: { companyId, rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] }, activo: true },
-      select: { id: true },
-    });
-    await prisma.notification.createMany({
-      data: directors.map((d) => ({
-        companyId,
-        userId: d.id,
-        tipo: 'COTIZACION_INICIADA',
-        titulo: `${supplierName} cotizó ${createdItems.length} ítem(s)`,
-        mensaje: `Respondió a cotización de ${quotation.requisition.consecutivo}`,
-        entidad: 'Quotation',
-        entidadId: quotation.id,
-      })),
-    });
+    if (createdItems.length) {
+      const directors = await prisma.user.findMany({
+        where: { companyId, rol: { in: ['DIRECTOR', 'APOYO_DIRECTOR'] }, activo: true },
+        select: { id: true },
+      });
+      await prisma.notification.createMany({
+        data: directors.map((d) => ({
+          companyId,
+          userId: d.id,
+          tipo: 'COTIZACION_INICIADA',
+          titulo: `${supplierName} cotizó ${createdItems.length} ítem(s)`,
+          mensaje: `Respondió a cotización de ${quotation.requisition.consecutivo}`,
+          entidad: 'Quotation',
+          entidadId: quotation.id,
+        })),
+      }).catch(() => {});
+    }
 
-    const resumen = createdItems.map((i) => `- ${i.descripcion}: ${fmt(i.precioUnitario)}`).join('\n');
+    // ── Respuesta: read-back natural de lo capturado + solo lo que falta ──
+    const resumen = createdItems
+      .map((i) => {
+        const entrega = i.fechaEntrega
+          ? `, entrega ${fmtFechaCorta(i.fechaEntrega)}`
+          : i.entregaDias
+            ? `, entrega en ${i.entregaDias} día(s)`
+            : '';
+        return `• *${i.descripcion}*: ${fmt(i.precioUnitario)}${entrega}`;
+      })
+      .join('\n');
     const totalResp = createdItems.reduce((a, i) => a + i.precioUnitario * i.cantidad, 0);
 
-    return (
-      `✅ *Cotización registrada*\n\n` +
-      `Gracias *${supplierName}*. Hemos registrado su cotización:\n\n` +
-      `${resumen}\n\n` +
-      `💰 Total estimado: *${fmt(totalResp)}*\n\n` +
-      (parsed.notas ? `📝 Nota: ${parsed.notas}\n\n` : '') +
-      `Le notificaremos si es seleccionado como proveedor ganador.`
-    );
+    let reply = `Perfecto, *${supplierName}* 🙌. Esto fue lo que anoté:\n\n${resumen}\n`;
+    if (createdItems.length > 1) reply += `\n💰 Total estimado: *${fmt(totalResp)}*\n`;
+    if (noSuministraIdx.length) {
+      const noNames = noSuministraIdx.map((i) => reqItems[i]?.descripcion).filter(Boolean);
+      if (noNames.length) reply += `\n🚫 Sin suministro: ${noNames.join(', ')}\n`;
+    }
+    if (unmatched.length) {
+      reply += `\n⚠️ No logré ubicar "${unmatched.join('", "')}" entre los materiales solicitados.\n`;
+    }
+    if (parsed.notas) reply += `\n📝 Nota: ${parsed.notas}\n`;
+
+    if (completo) {
+      reply += `\n¿Está todo correcto? Si algo quedó mal, escríbeme la corrección y lo actualizo. Le avisaremos si resulta seleccionado. ✅`;
+      await redis.set(qconfirmKey(companyId, supplierId), '1', 'EX', QCONFIRM_TTL).catch(() => {});
+    } else {
+      reply += `\n¿Correcto? Y para completar tu cotización solo me falta el precio de: *${faltantes.map((f) => f.descripcion).join('*, *')}*. 😊`;
+      await redis.set(qconfirmKey(companyId, supplierId), '1', 'EX', QCONFIRM_TTL).catch(() => {});
+    }
+    return reply;
   } catch (err) {
     logger.error('[bot.context] Error procesando cotización proveedor:', err.message);
+    await logParse({ companyId, supplierId, contexto: 'QUOTE', entrada: text, exito: false, error: err.message });
     return `Gracias ${supplierName}. Recibimos su mensaje pero hubo un error al procesarlo. Un agente lo revisará pronto.`;
   }
 };
 
 // ── Entrega: el proveedor confirma la OC, fija fecha o avisa que ya entregó ──────
-const handleSupplierDelivery = async (text, companyId, supplierName, activePO) => {
+const handleSupplierDelivery = async (text, companyId, supplierId, supplierName, activePO) => {
   const trackingService = require('../tracking/tracking.service');
   const consecutivo = activePO.consecutivo;
 
   let parsed = { tipo: 'OTRO', fechaEntrega: null, notas: null };
   try {
-    const { getGroq } = require('../../shared/utils/groq');
-    const groq = getGroq();
     const hoy = new Date().toISOString().slice(0, 10);
-    const c = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        {
-          role: 'system',
-          content: `Hoy es ${hoy}. Un proveedor responde sobre la orden de compra ${consecutivo}. Extrae en JSON válido:
+    parsed = await groqJson({
+      system: `Hoy es ${hoy}. Un proveedor colombiano responde EN LENGUAJE LIBRE sobre la orden de compra ${consecutivo}. Extrae en JSON válido:
 {"tipo":"CONFIRMAR|ENTREGADO|OTRO","fechaEntrega":"YYYY-MM-DD"|null,"notas":"texto"|null}
-- CONFIRMAR: acepta la orden y/o dice cuándo entregará. Si menciona una fecha (incluso relativa como "el viernes" o "en 3 días"), conviértela a YYYY-MM-DD respecto a hoy.
+- CONFIRMAR: acepta la orden y/o dice cuándo entregará. Si menciona una fecha (incluso relativa o coloquial: "el viernes", "en 3 días", "la otra semana", "pasado mañana"), conviértela a YYYY-MM-DD respecto a hoy.
 - ENTREGADO: dice que ya entregó o despachó el material.
 - OTRO: no se entiende o no tiene que ver con la entrega.`,
-        },
-        { role: 'user', content: text },
-      ],
-      temperature: 0.1,
-      max_tokens: 150,
-      response_format: { type: 'json_object' },
+      user: text,
+      maxTokens: 150,
     });
-    parsed = JSON.parse(c.choices[0].message.content);
+    await logParse({ companyId, supplierId, contexto: 'DELIVERY', entrada: text, salida: parsed, exito: parsed.tipo !== 'OTRO' });
   } catch (err) {
     logger.error('[bot.context] Error parseando confirmación de entrega:', err.message);
+    await logParse({ companyId, supplierId, contexto: 'DELIVERY', entrada: text, exito: false, error: err.message });
   }
 
   if (parsed.tipo !== 'CONFIRMAR' && parsed.tipo !== 'ENTREGADO') {
-    return `Gracias *${supplierName}*. Sobre la orden *${consecutivo}*, por favor confirme la fecha de entrega (ej: "entrego el 30 de junio") o avísenos cuando haya entregado.`;
+    return `Gracias *${supplierName}*. Sobre la orden *${consecutivo}*, ¿me confirmas para qué fecha nos entregas? (ej: "te lo llevo el viernes"). O avísame cuando ya hayas entregado.`;
   }
 
   const fecha = parsed.fechaEntrega ? new Date(parsed.fechaEntrega) : null;
   if (fecha && Number.isNaN(fecha.getTime())) {
-    return `Gracias *${supplierName}*. No entendí la fecha. ¿Podría indicarla así: "entrego el 30 de junio"?`;
+    return `Gracias *${supplierName}*. No entendí bien la fecha 😅. ¿Me la confirmas? (ej: "entrego el 30 de julio").`;
   }
 
   try {
@@ -580,12 +706,13 @@ const handleSupplierDelivery = async (text, companyId, supplierName, activePO) =
     await notifyDirectorsOrderUpdate(companyId, order, supplierName, parsed);
 
     if (parsed.tipo === 'ENTREGADO') {
-      return `✅ Gracias *${supplierName}*. Registramos la *entrega* de la orden *${consecutivo}*. Avisamos al equipo para el cierre y pago.`;
+      return `✅ ¡Gracias *${supplierName}*! Registramos la *entrega* de la orden *${consecutivo}*. Avisamos al equipo para el cierre y pago.`;
     }
     const fechaTxt = order.fechaEntregaPactada
-      ? ` con entrega pactada para el *${new Date(order.fechaEntregaPactada).toLocaleDateString('es-CO')}*`
+      ? ` con entrega el *${fmtFechaCorta(order.fechaEntregaPactada)}*`
       : '';
-    return `✅ Gracias *${supplierName}*. Confirmamos la orden *${consecutivo}*${fechaTxt}.\nLe enviaremos un recordatorio cerca de la fecha de entrega.`;
+    await redis.set(qconfirmKey(companyId, supplierId), '1', 'EX', QCONFIRM_TTL).catch(() => {});
+    return `✅ Listo, *${supplierName}*: registramos la orden *${consecutivo}*${fechaTxt}. ¿Correcto? Si la fecha cambia, escríbeme por aquí. Te recordaremos cerca de la entrega.`;
   } catch (err) {
     logger.error('[bot.context] Error confirmando OC del proveedor:', err.message);
     return `Gracias ${supplierName}. Recibimos su mensaje sobre la orden ${consecutivo}, pero hubo un error al registrarlo. Un agente lo revisará.`;
@@ -753,11 +880,13 @@ const buildResponse = async (text, companyId, user) => {
   const userId = typeof user === 'object' ? user?.id : null;
   const t = text.toLowerCase().trim();
 
-  // 1. Comandos exactos / consultas rápidas y deterministas.
+  // 1. Atajos exactos: respuesta instantánea y determinista, sin gastar tokens.
   const commandResult = await handleCommand(t, companyId, rol);
   if (commandResult !== null) return commandResult;
 
-  // 2. Usuarios internos → agente IA (consulta y ejecuta acciones).
+  // 2. TODO lo demás va al agente IA (lenguaje natural con herramientas reales).
+  //    groqFallback queda solo como red de seguridad si el agente falla
+  //    (p. ej. Groq caído a mitad del tool-calling).
   if (userId) {
     try {
       const { runAgent } = require('./bot.agent');
@@ -768,7 +897,6 @@ const buildResponse = async (text, companyId, user) => {
     }
   }
 
-  // 3. Fallback IA conversacional.
   return groqFallback(text, companyId, { rol });
 };
 
@@ -779,4 +907,15 @@ module.exports = {
   handleCommand,
   groqFallback,
   createRequisitionFromItems,
+  // Fetchers puros (reutilizados por las tools del agente IA)
+  fetchProjects,
+  fetchBudgetSummary,
+  fetchApuList,
+  fetchApuDetail,
+  fetchSuppliers,
+  fetchBasicPrices,
+  fetchRequisitions,
+  fetchOrders,
+  fetchQuotes,
+  fetchStatus,
 };

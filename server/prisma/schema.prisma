@@ -98,35 +98,39 @@ enum EstadoOrden {
 // ─── Modelos ──────────────────────────────────────────────────────────────────
 
 model Company {
-  id                 String   @id @default(cuid())
-  razonSocial        String
-  nit                String   @unique
-  representanteLegal String?
-  emailCorporativo   String?
-  telefono           String?
-  direccion          String?
-  ciudad             String?
-  banco              String?
-  tipoCuenta         String?
-  numeroCuenta       String?
-  logoUrl            String?  @db.Text
-  firmaUrl           String?  @db.Text
+  id                   String    @id @default(cuid())
+  razonSocial          String
+  nit                  String    @unique
+  representanteLegal   String?
+  emailCorporativo     String?
+  telefono             String?
+  direccion            String?
+  ciudad               String?
+  banco                String?
+  tipoCuenta           String?
+  numeroCuenta         String?
+  logoUrl              String?   @db.Text
+  firmaUrl             String?   @db.Text
   // Configuración tributaria (DIAN) por defecto de la empresa
-  ivaPorcentaje        Decimal @default(19) @db.Decimal(5, 2)
-  retefuentePorcentaje Decimal @default(0)  @db.Decimal(5, 2)
-  reteIcaPorMil        Decimal @default(0)  @db.Decimal(6, 3)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  ivaPorcentaje        Decimal   @default(19) @db.Decimal(5, 2)
+  retefuentePorcentaje Decimal   @default(0) @db.Decimal(5, 2)
+  reteIcaPorMil        Decimal   @default(0) @db.Decimal(6, 3)
+  // Onboarding obligatorio del director (wizard secuencial):
+  // 1=empresa 2=usuarios 3=proyecto 4=presupuesto 5=proveedores
+  onboardingStep       Int       @default(1)
+  setupCompletedAt     DateTime? // null = configuración incompleta
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   users           User[]
   rolePermissions RolePermission[]
-  projects      Project[]
-  suppliers     Supplier[]
-  priceHistory  PriceHistory[]
-  auditLogs     AuditLog[]
-  delegations   Delegation[]
-  basicPrices   BasicPrice[]
-  notifications Notification[]
+  projects        Project[]
+  suppliers       Supplier[]
+  priceHistory    PriceHistory[]
+  auditLogs       AuditLog[]
+  delegations     Delegation[]
+  basicPrices     BasicPrice[]
+  notifications   Notification[]
 }
 
 model User {
@@ -172,7 +176,7 @@ model Project {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  company      Company        @relation(fields: [companyId], references: [id])
+  company      Company       @relation(fields: [companyId], references: [id])
   itemsAPU     ItemAPU[]
   requisitions Requisition[]
   budgetSheets BudgetSheet[]
@@ -240,19 +244,19 @@ model ItemAPU {
 }
 
 model ItemAPUInsumo {
-  id             String  @id @default(cuid())
+  id             String   @id @default(cuid())
   itemApuId      String
   basicPriceId   String? // si este insumo es un básico compuesto (ej. concreto), su desglose
-  tipo           String  // MATERIAL | M_DE_OBRA | EQUIPO | OTRO
+  tipo           String // MATERIAL | M_DE_OBRA | EQUIPO | OTRO
   descripcion    String
-  unidad         String  @default("UND")
-  rendimiento    Decimal @default(0) @db.Decimal(15, 4)
-  precioUnitario Decimal @default(0) @db.Decimal(15, 2)
-  precioTotal    Decimal @default(0) @db.Decimal(15, 2)
+  unidad         String   @default("UND")
+  rendimiento    Decimal  @default(0) @db.Decimal(15, 4)
+  precioUnitario Decimal  @default(0) @db.Decimal(15, 2)
+  precioTotal    Decimal  @default(0) @db.Decimal(15, 2)
   createdAt      DateTime @default(now())
 
-  itemAPU          ItemAPU         @relation(fields: [itemApuId], references: [id], onDelete: Cascade)
-  basicPrice       BasicPrice?     @relation(fields: [basicPriceId], references: [id], onDelete: SetNull)
+  itemAPU          ItemAPU           @relation(fields: [itemApuId], references: [id], onDelete: Cascade)
+  basicPrice       BasicPrice?       @relation(fields: [basicPriceId], references: [id], onDelete: SetNull)
   requisitionItems RequisitionItem[]
 }
 
@@ -378,25 +382,25 @@ model QuotationInvite {
 }
 
 model PurchaseOrder {
-  id                  String      @id @default(cuid())
-  consecutivo         String      @unique
-  quotationId         String
-  supplierId          String
-  estado              EstadoOrden @default(EMITIDA)
-  montoTotal          Decimal     @db.Decimal(15, 2)
-  fechaEmision        DateTime    @default(now())
-  fechaEntregaPactada DateTime?
-  fechaEntregaReal    DateTime?
-  fechaPago           DateTime?
-  pdfUrl              String?     @db.Text
-  alertaEnviada       Boolean     @default(false)
+  id                   String      @id @default(cuid())
+  consecutivo          String      @unique
+  quotationId          String
+  supplierId           String
+  estado               EstadoOrden @default(EMITIDA)
+  montoTotal           Decimal     @db.Decimal(15, 2)
+  fechaEmision         DateTime    @default(now())
+  fechaEntregaPactada  DateTime?
+  fechaEntregaReal     DateTime?
+  fechaPago            DateTime?
+  pdfUrl               String?     @db.Text
+  alertaEnviada        Boolean     @default(false)
   // Impuestos DIAN (override por OC; si null usa la config de la empresa)
-  transporte           Decimal  @default(0) @db.Decimal(15, 2)
-  ivaPorcentaje        Decimal? @db.Decimal(5, 2)
-  retefuentePorcentaje Decimal? @db.Decimal(5, 2)
-  reteIcaPorMil        Decimal? @db.Decimal(6, 3)
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
+  transporte           Decimal     @default(0) @db.Decimal(15, 2)
+  ivaPorcentaje        Decimal?    @db.Decimal(5, 2)
+  retefuentePorcentaje Decimal?    @db.Decimal(5, 2)
+  reteIcaPorMil        Decimal?    @db.Decimal(6, 3)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
 
   quotation        Quotation       @relation(fields: [quotationId], references: [id])
   proveedor        Supplier        @relation("proveedor", fields: [supplierId], references: [id])
@@ -437,7 +441,7 @@ model BasicPrice {
 
   company        Company            @relation(fields: [companyId], references: [id])
   insumos        BasicPriceInsumo[] // desglose del básico compuesto (cemento, arena, ...)
-  itemAPUInsumos ItemAPUInsumo[]    // insumos de APU vinculados a este básico
+  itemAPUInsumos ItemAPUInsumo[] // insumos de APU vinculados a este básico
 
   @@unique([companyId, codigo])
 }
@@ -490,6 +494,22 @@ model RolePermission {
   company Company @relation(fields: [companyId], references: [id])
 
   @@unique([companyId, rol, modulo])
+}
+
+// Registro de cada intento de interpretación IA del bot (cotizaciones, entregas,
+// clasificación de intención y números desconocidos) para depurar fallos de parsing.
+model BotParseLog {
+  id         String   @id @default(cuid())
+  companyId  String?
+  supplierId String?
+  contexto   String // QUOTE | DELIVERY | INTENT | ROUTE_UNKNOWN
+  entrada    String   @db.Text
+  salida     Json?
+  exito      Boolean  @default(false)
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
 }
 
 model AuditLog {
