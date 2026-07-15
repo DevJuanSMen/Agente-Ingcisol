@@ -131,19 +131,28 @@ class BotManager {
     }
   }
 
-  // Programa un único reintento de reconexión (sin duplicar timers; no reintenta
-  // si no hay sesión guardada — requiere QR).
-  async _scheduleReconnect(delayMs = 15_000) {
+  // Programa reintentos de reconexión con backoff (15s → 30s → … cap 5 min),
+  // SIN rendirse mientras exista sesión guardada: un deploy de Railway reinicia
+  // el worker y un único intento fallido dejaba el bot muerto hasta acción
+  // manual. Sin sesión no se reintenta (requiere QR). El backoff se resetea al
+  // conectar ('open').
+  async _scheduleReconnect(delayMs) {
     if (this.retryTimer) return;
     if (!this._hasSession()) {
       logger.info('[bot] Sin sesión guardada; no se reconecta solo (requiere QR manual).');
       return;
     }
+    const delay = delayMs ?? this.retryDelay ?? 15_000;
+    this.retryDelay = Math.min((this.retryDelay ?? 15_000) * 2, 300_000);
+    logger.info(`[bot] Reintento de conexión en ${Math.round(delay / 1000)}s`);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       logger.info('[bot] Reintentando reconexión...');
-      this.init();
-    }, delayMs);
+      this.init().catch((err) => {
+        logger.error(`[bot] Reintento de conexión falló: ${err.message}`);
+        this._scheduleReconnect();
+      });
+    }, delay);
   }
 
   // Inicia (o reanuda) la sesión global. La vinculación es siempre por QR, que se
@@ -215,6 +224,7 @@ class BotManager {
           logger.info('[bot] Listo');
           this._clearQrTimer();
           this.ready = true;
+          this.retryDelay = null; // resetear el backoff de reconexión
           await redis.del(K.qr);
           await redis.set(K.status, 'ready');
         }
@@ -252,9 +262,10 @@ class BotManager {
           // y sin condiciones (las credenciales acaban de guardarse en creds.update).
           if (statusCode === DisconnectReason.restartRequired) {
             logger.info('[bot] Restart requerido (515); reconectando de inmediato...');
-            this.init().catch((err) =>
-              logger.error(`[bot] Error en reconexión 515: ${err.message}`)
-            );
+            this.init().catch((err) => {
+              logger.error(`[bot] Error en reconexión 515: ${err.message}`);
+              this._scheduleReconnect();
+            });
             return;
           }
 
@@ -377,7 +388,14 @@ class BotManager {
       return;
     }
     logger.info('[bot] Restaurando sesión global');
-    await this.init();
+    try {
+      await this.init();
+    } catch (err) {
+      // Un fallo transitorio al arrancar (red/DNS del contenedor recién creado)
+      // no debe dejar el bot muerto: se reintenta con backoff.
+      logger.error(`[bot] Fallo restaurando sesión: ${err.message}`);
+      await this._scheduleReconnect();
+    }
   }
 }
 
