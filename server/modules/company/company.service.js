@@ -72,7 +72,20 @@ const computeOnboarding = async (companyId) => {
 };
 
 const getOnboarding = async (companyId) => {
-  const { state } = await computeOnboarding(companyId);
+  const { company, state } = await computeOnboarding(companyId);
+  // Auto-reparación: si el estado calculado ya está completo pero nunca se
+  // persistió (el POST /advance original se perdió por red o un redeploy),
+  // guardarlo aquí. Sin esto, el frontend rebotaba eternamente entre el wizard
+  // ("estás listo") y el guard de rutas ("la BD dice que no").
+  if (state.done && !company.setupCompletedAt) {
+    const completedAt = new Date();
+    await prisma.company.update({
+      where: { id: companyId },
+      data: { onboardingStep: state.step, setupCompletedAt: completedAt },
+    });
+    await redis.del(setupCacheKey(companyId)).catch(() => {});
+    return { ...state, completedAt };
+  }
   return state;
 };
 

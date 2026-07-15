@@ -55,6 +55,11 @@ export default function OnboardingWizard() {
   // dato fresco llegue (cubre redeploys/red intermitente) y LUEGO se navega.
   const finish = useCallback(async () => {
     for (let i = 0; i < 5; i++) {
+      // GET /onboarding solo CALCULA el estado; únicamente POST /advance
+      // persiste setupCompletedAt en la BD. Si el clic original de "Finalizar"
+      // se perdió (p.ej. un redeploy), sin esto el guard rebota eternamente.
+      // Es idempotente, así que se asegura en cada intento.
+      await api.post('/company/onboarding/advance').catch(() => {});
       await refreshUser();
       if (useAuthStore.getState().user?.company?.setupCompletedAt) break;
       await new Promise((r) => setTimeout(r, 1500));
