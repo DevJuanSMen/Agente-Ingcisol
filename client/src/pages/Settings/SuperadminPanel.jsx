@@ -298,6 +298,134 @@ function BotTab() {
           </div>
         </div>
       )}
+
+      <BotDiagnostics />
+    </div>
+  );
+}
+
+// ── Diagnóstico del bot: probar un número + actividad reciente ────────────────
+function BotDiagnostics() {
+  const [phone, setPhone] = useState('');
+  const [result, setResult] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [logs, setLogs] = useState(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  const diagnose = async (e) => {
+    e.preventDefault();
+    if (!phone.trim()) return;
+    setChecking(true);
+    setResult(null);
+    try {
+      const { data } = await api.get('/admin/whatsapp/diagnose', { params: { phone: phone.trim() } });
+      setResult(data.data);
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al diagnosticar');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const { data } = await api.get('/admin/whatsapp/logs', { params: { limit: 30 } });
+      setLogs(data.data || []);
+    } catch {
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const fmtLogDate = (d) => new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  return (
+    <div className="space-y-5 border-t border-slate-200 pt-5">
+      {/* Probar un número */}
+      <div>
+        <p className="text-sm font-semibold text-slate-800">🔍 Probar un número</p>
+        <p className="text-xs text-slate-500 mt-0.5 mb-2">
+          Escribe un número de WhatsApp y te digo exactamente qué haría el bot con él: a quién reconoce,
+          en qué empresa y si algo lo está bloqueando.
+        </p>
+        <form onSubmit={diagnose} className="flex gap-2">
+          <input
+            type="text"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="3001234567 o +573001234567"
+            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <Button type="submit" size="sm" loading={checking}>Diagnosticar</Button>
+        </form>
+
+        {result && (
+          <div className={`mt-3 p-3 rounded-xl border text-sm space-y-2 ${
+            result.veredicto.startsWith('OK') ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+          }`}>
+            <p className={`font-semibold ${result.veredicto.startsWith('OK') ? 'text-green-800' : 'text-red-800'}`}>
+              {result.veredicto}
+            </p>
+            <p className="text-xs text-slate-600">
+              Número consultado: <code>{result.numeroConsultado}</code> → normalizado: <code>{result.numeroNormalizado}</code>
+              {' '}· Aviso de "desconocido" en espera: {result.avisoDesconocidoEnEspera}
+            </p>
+            {result.coincidencias.length > 0 ? (
+              <div className="space-y-1">
+                {result.coincidencias.map((m, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs text-slate-700 flex-wrap">
+                    <span className="px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">{m.tipo}</span>
+                    <span className="font-medium">{m.nombre}</span>
+                    {m.rol && <span className="text-slate-400">{ROL_LABEL(m.rol)}</span>}
+                    <span className="text-slate-500">· {m.empresa}</span>
+                    <span className="text-slate-400">guardado: {m.whatsappGuardado}</span>
+                    {!m.botHabilitado && <span className="text-red-600 font-semibold">⛔ bot deshabilitado</span>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Sin coincidencias en usuarios ni proveedores activos.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Actividad reciente */}
+      <div>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-800">📜 Actividad reciente del bot</p>
+          <Button size="sm" variant="ghost" onClick={loadLogs} loading={logsLoading}>
+            {logs === null ? 'Cargar' : 'Actualizar'}
+          </Button>
+        </div>
+        {logs !== null && (
+          logs.length === 0 ? (
+            <p className="text-xs text-slate-400 mt-2">Sin registros todavía.</p>
+          ) : (
+            <div className="mt-2 space-y-1.5 max-h-80 overflow-auto">
+              {logs.map((l) => (
+                <div key={l.id} className="flex items-start gap-2 text-xs p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className={`px-1.5 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                    l.exito ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'
+                  }`}>
+                    {l.contexto}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-slate-700 truncate">"{l.entrada}"</p>
+                    <p className="text-slate-400">
+                      {fmtLogDate(l.createdAt)}
+                      {l.empresa && <> · {l.empresa}</>}
+                      {l.error && <span className="text-red-500"> · {l.error}</span>}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </div>
   );
 }

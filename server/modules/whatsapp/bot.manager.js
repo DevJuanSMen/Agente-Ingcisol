@@ -11,7 +11,7 @@ const {
 const qrcode = require('qrcode');
 const { logger } = require('../../shared/utils/logger');
 const redis = require('../../shared/redis');
-const { routeIncoming } = require('./bot.router.msg');
+const { routeIncoming, logParse } = require('./bot.router.msg');
 const { normalizeWhatsapp } = require('../../shared/utils/phone');
 
 // Sesión ÚNICA de Baileys para toda la plataforma: un solo número/QR responde a
@@ -320,6 +320,12 @@ class BotManager {
         // Sin número real no se puede rutear; responder "no estás registrado" a un
         // usuario registrado (solo porque llegó como LID) es peor que callar.
         logger.warn(`[bot] No se pudo resolver el número real del LID ${jid}; mensaje ignorado.`);
+        await logParse({
+          contexto: 'ROUTE_LID_FAIL',
+          entrada: text.slice(0, 2000),
+          exito: false,
+          error: `LID sin resolver: ${jid}`,
+        }).catch(() => {});
         return;
       }
     }

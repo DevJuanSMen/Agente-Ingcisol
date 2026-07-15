@@ -51,6 +51,28 @@ router.post('/whatsapp/disconnect', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Diagnóstico del bot ──────────────────────────────────────────────────────
+
+// ¿Qué haría el bot con este número? Reproduce el matching de ruteo y explica
+// las coincidencias (usuario/proveedor, empresa, bot habilitado) y el veredicto.
+router.get('/whatsapp/diagnose', async (req, res, next) => {
+  try {
+    const phone = String(req.query.phone || '').trim();
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'Falta el parámetro ?phone=' });
+    }
+    const { diagnoseNumber } = require('../whatsapp/bot.router.msg');
+    ok(res, await diagnoseNumber(phone));
+  } catch (err) { next(err); }
+});
+
+// Últimos registros de interpretación/ruteo del bot (BotParseLog).
+router.get('/whatsapp/logs', async (req, res, next) => {
+  try {
+    ok(res, await adminService.getBotLogs(req.query.limit));
+  } catch (err) { next(err); }
+});
+
 // ── Interruptor por empresa (exclusión del bot global) ──────────────────────
 
 router.post('/companies/:id/bot/disable', async (req, res, next) => {

@@ -87,4 +87,22 @@ const enableBot = async (companyId) => {
   return { enabled: true };
 };
 
-module.exports = { listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, SYSTEM_COMPANY_ID };
+// Últimos registros de interpretación/ruteo del bot (BotParseLog), con el nombre
+// de la empresa resuelto. Es la vista "por qué el bot no respondió" del panel.
+const getBotLogs = async (limit = 30) => {
+  const logs = await prisma.botParseLog.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: Math.min(Number(limit) || 30, 100),
+  });
+  const companyIds = [...new Set(logs.map((l) => l.companyId).filter(Boolean))];
+  const companies = companyIds.length
+    ? await prisma.company.findMany({
+        where: { id: { in: companyIds } },
+        select: { id: true, razonSocial: true },
+      })
+    : [];
+  const nameById = new Map(companies.map((c) => [c.id, c.razonSocial]));
+  return logs.map((l) => ({ ...l, empresa: l.companyId ? nameById.get(l.companyId) || l.companyId : null }));
+};
+
+module.exports = { listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, getBotLogs, SYSTEM_COMPANY_ID };

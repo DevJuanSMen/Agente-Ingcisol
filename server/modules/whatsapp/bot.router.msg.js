@@ -15,9 +15,11 @@ const botFlows = require('./bot.flows');
 //   5. Proveedor sin contexto abierto (conversación general)
 //   6. Desconocido → aviso único de "no eres usuario de PROCURA AI"
 
-// Mensaje para números no registrados: se envía UNA sola vez por número (7 días)
-// para no spamear a desconocidos.
-const UNKNOWN_TTL = 7 * 24 * 60 * 60;
+// Mensaje para números no registrados: máximo uno por hora por número. Antes era
+// 7 días, pero eso convertía cualquier fallo de match en silencio total durante
+// una semana (imposible de diagnosticar para el usuario). Una hora sigue evitando
+// spam/bucles con otros bots sin esconder el problema.
+const UNKNOWN_TTL = 60 * 60;
 const unknownKey = (phoneNat) => `whatsapp:unknown:${phoneNat}`;
 
 const enabledKey = (companyId) => `whatsapp:${companyId}:enabled`;
@@ -134,13 +136,75 @@ async function routeIncoming(text, rawPhone) {
   });
   if (firstTime === 'OK') {
     logger.info(`[bot.route] Número desconocido: ${phoneNat}`);
+    // Incluir el número visto hace el fallo auto-diagnosticable: si el usuario SÍ
+    // está registrado, puede comparar este número con el de su perfil.
     return (
       '👋 Hola, soy el asistente de *PROCURA AI*.\n\n' +
-      'Este número no está registrado en ninguna empresa de la plataforma, así que no tengo proyectos ni información para mostrarte.\n\n' +
-      'Si crees que es un error, pide al director de tu empresa que registre tu número de WhatsApp en tu perfil.'
+      `Tu número de WhatsApp me llega como *${phoneNat}* y no está registrado en ninguna empresa de la plataforma, así que no tengo proyectos ni información para mostrarte.\n\n` +
+      'Si crees que es un error, pide al director de tu empresa que verifique que ese número (tal como aparece arriba) esté en tu perfil.'
     );
   }
   return null;
 }
 
-module.exports = { routeIncoming, logParse };
+// ── Diagnóstico para el panel superadmin ──────────────────────────────────────
+// Reproduce el matching de routeIncoming para un número dado y explica qué
+// encontraría el bot: usuarios/proveedores que casan, si su empresa tiene el bot
+// habilitado y qué rama del ruteo atendería el mensaje.
+async function diagnoseNumber(rawPhone) {
+  const phoneNat = nationalNumber(rawPhone) || rawPhone;
+
+  const [supplierRows, userRows, companies] = await Promise.all([
+    prisma.supplier.findMany({
+      where: { activo: true, whatsapp: { not: null } },
+      select: { id: true, nombre: true, companyId: true, whatsapp: true },
+    }),
+    prisma.user.findMany({
+      where: { activo: true, whatsapp: { not: null } },
+      select: { id: true, nombre: true, rol: true, companyId: true, whatsapp: true },
+    }),
+    prisma.company.findMany({ select: { id: true, razonSocial: true } }),
+  ]);
+  const companyName = new Map(companies.map((c) => [c.id, c.razonSocial]));
+
+  const describe = async (rows, tipo) => {
+    const out = [];
+    for (const r of rows.filter((x) => matchesPhone(x.whatsapp, phoneNat))) {
+      const enabled = await redis.get(enabledKey(r.companyId));
+      out.push({
+        tipo,
+        nombre: r.nombre,
+        rol: r.rol || null,
+        whatsappGuardado: r.whatsapp,
+        empresa: companyName.get(r.companyId) || r.companyId,
+        botHabilitado: enabled !== '0',
+      });
+    }
+    return out;
+  };
+
+  const usuarios = await describe(userRows, 'USUARIO');
+  const proveedores = await describe(supplierRows, 'PROVEEDOR');
+  const activos = [...usuarios, ...proveedores].filter((m) => m.botHabilitado);
+
+  const bloqueoUnknown = await redis.ttl(unknownKey(phoneNat));
+
+  let veredicto;
+  if (activos.length) {
+    veredicto = 'OK: el bot atendería este número.';
+  } else if (usuarios.length || proveedores.length) {
+    veredicto = 'PROBLEMA: el número está registrado pero su empresa tiene el bot deshabilitado (interruptor del superadmin).';
+  } else {
+    veredicto = 'PROBLEMA: ningún usuario ni proveedor activo tiene este número de WhatsApp registrado.';
+  }
+
+  return {
+    numeroConsultado: rawPhone,
+    numeroNormalizado: phoneNat,
+    coincidencias: [...usuarios, ...proveedores],
+    avisoDesconocidoEnEspera: bloqueoUnknown > 0 ? `sí (se libera en ${Math.ceil(bloqueoUnknown / 60)} min)` : 'no',
+    veredicto,
+  };
+}
+
+module.exports = { routeIncoming, logParse, diagnoseNumber };
