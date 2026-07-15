@@ -299,7 +299,70 @@ function BotTab() {
         </div>
       )}
 
+      <GroqKeySection />
       <BotDiagnostics />
+    </div>
+  );
+}
+
+// ── API key de Groq (IA): rotación en caliente sin acceso a Railway ───────────
+function GroqKeySection() {
+  const [status, setStatus] = useState(null); // { configurada, origen }
+  const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null); // { ok, text }
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const { data } = await api.get('/admin/groq-key/status');
+      setStatus(data.data);
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!key.trim()) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const { data } = await api.post('/admin/groq-key', { key: key.trim() });
+      setMsg({ ok: true, text: data.data?.message || 'Key activada.' });
+      setKey('');
+      loadStatus();
+    } catch (err) {
+      setMsg({ ok: false, text: err.response?.data?.message || 'Error al guardar la key' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-slate-200 pt-5">
+      <p className="text-sm font-semibold text-slate-800">🔑 API key de Groq (la IA del bot)</p>
+      <p className="text-xs text-slate-500 mt-0.5 mb-2">
+        Se valida contra Groq y se activa al instante en el bot y la API, sin reiniciar nada.
+        {status && (
+          <> Estado actual: <strong>{status.configurada ? `configurada (origen: ${status.origen})` : 'sin configurar'}</strong>.</>
+        )}
+      </p>
+      <form onSubmit={save} className="flex gap-2">
+        <input
+          type="password"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="gsk_..."
+          autoComplete="off"
+          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+        <Button type="submit" size="sm" loading={saving} disabled={!key.trim()}>Validar y activar</Button>
+      </form>
+      {msg && (
+        <p className={`text-xs mt-2 font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>
+          {msg.ok ? '✅ ' : '❌ '}{msg.text}
+        </p>
+      )}
     </div>
   );
 }

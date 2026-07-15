@@ -99,6 +99,13 @@ app.listen(PORT, () => {
   logger.info(`API PROCURA AI corriendo en puerto ${PORT}`);
   // Asegura el superadmin de plataforma (si hay credenciales en el entorno)
   ensureSuperadmin();
+  // Si el superadmin guardó una API key de Groq desde el panel, tiene prioridad
+  // sobre la del entorno (rotación sin acceso a Railway).
+  const redis = require('./shared/redis');
+  const { initGroqKeyFromRedis } = require('./shared/utils/groq');
+  initGroqKeyFromRedis(redis)
+    .then((loaded) => loaded && logger.info('API key de Groq cargada desde Redis (panel)'))
+    .catch((err) => logger.warn(`No se pudo leer la key de Groq en Redis: ${err.message}`));
 });
 
 module.exports = app;

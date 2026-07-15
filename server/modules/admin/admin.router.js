@@ -51,6 +51,41 @@ router.post('/whatsapp/disconnect', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── API key de Groq (rotación en caliente, sin acceso a Railway) ─────────────
+// La key se valida contra Groq, se guarda en Redis y se recarga en el proceso
+// api y en el worker (IPC). Nunca se persiste en el código ni en git.
+
+router.get('/groq-key/status', async (req, res, next) => {
+  try {
+    const { hasGroqKey, GROQ_REDIS_KEY } = require('../../shared/utils/groq');
+    const enRedis = !!(await redis.get(GROQ_REDIS_KEY));
+    ok(res, { configurada: hasGroqKey(), origen: enRedis ? 'panel' : 'entorno' });
+  } catch (err) { next(err); }
+});
+
+router.post('/groq-key', async (req, res, next) => {
+  try {
+    const key = String(req.body.key || '').trim();
+    if (!key.startsWith('gsk_') || key.length < 20) {
+      return res.status(400).json({ success: false, message: 'La key no tiene el formato de Groq (gsk_...).' });
+    }
+    const { testGroqKey, setGroqKey, GROQ_REDIS_KEY } = require('../../shared/utils/groq');
+    try {
+      await testGroqKey(key);
+    } catch (err) {
+      const invalid = err.status === 401 || /invalid/i.test(err.message || '');
+      return res.status(400).json({
+        success: false,
+        message: invalid ? 'Groq rechazó la key (inválida o revocada).' : `No se pudo validar la key: ${err.message}`,
+      });
+    }
+    await redis.set(GROQ_REDIS_KEY, key);
+    setGroqKey(key); // proceso api
+    await publishCommand(redis, 'reload_groq_key'); // proceso worker (bot)
+    ok(res, { message: 'API key de Groq validada y activada en toda la plataforma.' });
+  } catch (err) { next(err); }
+});
+
 // ── Diagnóstico del bot ──────────────────────────────────────────────────────
 
 // ¿Qué haría el bot con este número? Reproduce el matching de ruteo y explica

@@ -53,6 +53,11 @@ subscribeToCommands(async (cmd) => {
       await notifyWinnerSelection(cmd.companyId, cmd.quotationId);
     } else if (cmd.action === 'send_po_documents') {
       await sendPoDocuments(cmd.companyId, cmd.orderIds);
+    } else if (cmd.action === 'reload_groq_key') {
+      // El panel guardó una key nueva en Redis: recargarla en este proceso.
+      const { initGroqKeyFromRedis } = require('./shared/utils/groq');
+      const loaded = await initGroqKeyFromRedis(redis);
+      logger.info(`[worker] API key de Groq recargada desde Redis: ${loaded ? 'sí' : 'no había'}`);
     } else if (cmd.action === 'send_password_reset_code') {
       const saludo = cmd.nombre ? `Hola ${cmd.nombre}, ` : '';
       const msg =
@@ -66,6 +71,13 @@ subscribeToCommands(async (cmd) => {
     logger.error('[worker] Error procesando comando:', err.message);
   }
 });
+
+// Si el superadmin guardó una API key de Groq desde el panel, cargarla antes de
+// atender mensajes (tiene prioridad sobre la del entorno).
+const { initGroqKeyFromRedis } = require('./shared/utils/groq');
+initGroqKeyFromRedis(redis)
+  .then((loaded) => loaded && logger.info('[worker] API key de Groq cargada desde Redis (panel)'))
+  .catch((err) => logger.warn(`[worker] No se pudo leer la key de Groq en Redis: ${err.message}`));
 
 // Restaura la sesión global al arrancar (si ya fue vinculada por QR)
 botManager.restoreSession().catch((err) =>
