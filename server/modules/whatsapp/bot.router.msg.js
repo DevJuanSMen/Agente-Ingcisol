@@ -124,7 +124,14 @@ async function routeIncoming(text, rawPhone) {
 
   // ── 6. Número desconocido → responder una sola vez y registrar ──
   const firstTime = await redis.set(unknownKey(phoneNat), '1', 'EX', UNKNOWN_TTL, 'NX');
-  await logParse({ contexto: 'ROUTE_UNKNOWN', entrada: text.slice(0, 2000), exito: false });
+  // Se guarda el número visto (raw y normalizado) para poder diagnosticar por qué
+  // no hizo match con ningún usuario/proveedor.
+  await logParse({
+    contexto: 'ROUTE_UNKNOWN',
+    entrada: text.slice(0, 2000),
+    exito: false,
+    error: `raw:${rawPhone} nat:${phoneNat}`,
+  });
   if (firstTime === 'OK') {
     logger.info(`[bot.route] Número desconocido: ${phoneNat}`);
     return (

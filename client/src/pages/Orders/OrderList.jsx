@@ -67,12 +67,66 @@ function TaxModal({ order, onClose, onSaved }) {
   );
 }
 
+// Previsualización del PDF de la OC en un modal (iframe sobre un blob local);
+// el mismo blob se reutiliza para descargar si el documento está bien.
+function PdfPreviewModal({ order, onClose }) {
+  const [url, setUrl] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let objectUrl = null;
+    api.get(`/orders/${order.id}/pdf`, { responseType: 'blob' })
+      .then((res) => {
+        objectUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+        setUrl(objectUrl);
+      })
+      .catch(() => setError('No se pudo generar el PDF de la orden.'));
+    return () => { if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
+  }, [order.id]);
+
+  const download = () => {
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${order.consecutivo || 'orden-compra'}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl flex flex-col max-h-[92vh]">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 flex-shrink-0">
+          <h2 className="text-base font-semibold text-slate-800">Orden de compra · {order.consecutivo}</h2>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={download} disabled={!url}>⬇ Descargar</Button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none ml-2">×</button>
+          </div>
+        </div>
+        <div className="flex-1 min-h-[70vh] bg-slate-100 rounded-b-2xl overflow-hidden">
+          {error ? (
+            <div className="flex items-center justify-center h-full text-sm text-red-600 p-6">{error}</div>
+          ) : url ? (
+            <iframe src={url} title={`PDF ${order.consecutivo}`} className="w-full h-full min-h-[70vh]" />
+          ) : (
+            <div className="flex items-center justify-center h-full py-24">
+              <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function OrderList() {
   const user = useAuthStore((s) => s.user);
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
   const [taxOrder, setTaxOrder] = useState(null);
+  const [pdfOrder, setPdfOrder] = useState(null);
   const canEditTaxes = useCan('orders', 'editar');
 
   const load = () => {
@@ -110,25 +164,6 @@ export default function OrderList() {
     }
   };
 
-  const handleDownloadPdf = async (id, consecutivo) => {
-    setActionLoading(id);
-    try {
-      const res = await api.get(`/orders/${id}/pdf`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${consecutivo || 'orden-compra'}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert(err.response?.data?.message || 'No se pudo generar el PDF');
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
   const getSemaforo = (fechaEntrega) => {
     if (!fechaEntrega) return null;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
@@ -157,8 +192,8 @@ export default function OrderList() {
     )},
     { key: 'actions', label: 'Acciones', render: (r) => (
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="secondary" loading={actionLoading === r.id} onClick={() => handleDownloadPdf(r.id, r.consecutivo)}>
-          PDF
+        <Button size="sm" variant="secondary" onClick={() => setPdfOrder(r)}>
+          Ver PDF
         </Button>
         {canEditTaxes && (
           <Button size="sm" variant="ghost" onClick={() => setTaxOrder(r)}>
@@ -197,6 +232,10 @@ export default function OrderList() {
           onClose={() => setTaxOrder(null)}
           onSaved={() => { setTaxOrder(null); load(); }}
         />
+      )}
+
+      {pdfOrder && (
+        <PdfPreviewModal order={pdfOrder} onClose={() => setPdfOrder(null)} />
       )}
     </div>
   );

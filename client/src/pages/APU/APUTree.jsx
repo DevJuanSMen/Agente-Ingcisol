@@ -9,6 +9,38 @@ const pct = (saldo, total) => {
   return Math.round((1 - Number(saldo) / Number(total)) * 100);
 };
 
+// Normaliza la ejecución que envía el servidor: % gastado (OC pagadas),
+// % comprometido (OC en curso) y saldo disponible sobre el presupuesto.
+const getEjecucion = (ejecucion) => {
+  const presupuesto = Number(ejecucion?.presupuesto) || 0;
+  const gastado = Number(ejecucion?.gastado) || 0;
+  const comprometido = Number(ejecucion?.comprometido) || 0;
+  if (presupuesto <= 0) return null;
+  const pctGastado = Math.min(100, (gastado / presupuesto) * 100);
+  const pctComprometido = Math.min(100 - pctGastado, (comprometido / presupuesto) * 100);
+  return {
+    presupuesto,
+    gastado,
+    comprometido,
+    saldo: Math.max(0, presupuesto - gastado - comprometido),
+    pctGastado,
+    pctComprometido,
+    pctTotal: Math.round(pctGastado + pctComprometido),
+  };
+};
+
+// Barra de ejecución: segmento sólido = gastado (pagado), segmento claro =
+// comprometido (OC emitida/enviada/entregada sin pagar).
+const EjecucionBar = ({ ejec, height = 'h-1.5' }) => {
+  const color = ejec.pctTotal > 90 ? 'bg-danger' : ejec.pctTotal > 60 ? 'bg-warning' : 'bg-success';
+  return (
+    <div className={`flex-1 ${height} bg-slate-200 rounded-full overflow-hidden flex`}>
+      <div className={`h-full ${color} transition-all`} style={{ width: `${ejec.pctGastado}%` }} />
+      <div className={`h-full ${color} opacity-40 transition-all`} style={{ width: `${ejec.pctComprometido}%` }} />
+    </div>
+  );
+};
+
 const TIPO_STYLE = {
   APU:         'bg-blue-100 text-blue-700',
   BASICOS:     'bg-green-100 text-green-700',
@@ -56,10 +88,13 @@ function InsumosTable({ insumos, apuCodigo }) {
               <th className="px-3 py-1.5 text-right text-slate-500 font-semibold w-20">Rend.</th>
               <th className="px-3 py-1.5 text-right text-slate-500 font-semibold w-28">V. Unitario</th>
               <th className="px-3 py-1.5 text-right text-slate-500 font-semibold w-28">V. Parcial</th>
+              <th className="px-3 py-1.5 text-left text-slate-500 font-semibold w-40">Ejecución</th>
             </tr>
           </thead>
           <tbody>
-            {insumos.map((ins, i) => (
+            {insumos.map((ins, i) => {
+              const ejec = getEjecucion(ins.ejecucion);
+              return (
               <tr key={ins.id || i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                 <td className="px-3 py-1.5">
                   <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${INSUMO_TIPO_STYLE[ins.tipo] || INSUMO_TIPO_STYLE.OTRO}`}>
@@ -73,8 +108,22 @@ function InsumosTable({ insumos, apuCodigo }) {
                 </td>
                 <td className="px-3 py-1.5 text-right text-slate-700">{fmtCOP(ins.precioUnitario)}</td>
                 <td className="px-3 py-1.5 text-right font-semibold text-slate-800">{fmtCOP(ins.precioTotal)}</td>
+                <td className="px-3 py-1.5">
+                  {ejec ? (
+                    <div
+                      className="flex items-center gap-2"
+                      title={`Gastado ${fmtCOP(ejec.gastado)}${ejec.comprometido > 0 ? ` · Comprometido ${fmtCOP(ejec.comprometido)}` : ''} de ${fmtCOP(ejec.presupuesto)} · Saldo ${fmtCOP(ejec.saldo)}`}
+                    >
+                      <EjecucionBar ejec={ejec} height="h-1" />
+                      <span className="text-xs text-slate-400 w-8 text-right flex-shrink-0">{ejec.pctTotal}%</span>
+                    </div>
+                  ) : (
+                    <span className="text-slate-300 text-xs">—</span>
+                  )}
+                </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
           <tfoot>
             <tr className="bg-slate-50 border-t-2 border-slate-200">
@@ -84,6 +133,7 @@ function InsumosTable({ insumos, apuCodigo }) {
               <td className="px-3 py-1.5 text-right text-sm font-bold text-slate-800">
                 {fmtCOP(insumos.reduce((s, ins) => s + Number(ins.precioTotal || 0), 0))}
               </td>
+              <td />
             </tr>
           </tfoot>
         </table>
@@ -95,7 +145,9 @@ function InsumosTable({ insumos, apuCodigo }) {
 // ── APU Item row ──────────────────────────────────────────────────────────────
 const ItemRow = ({ item }) => {
   const [expanded, setExpanded] = useState(false);
-  const ejecutado = pct(item.saldoValor, item.cantidad * item.precioUnitario);
+  const ejec = getEjecucion(item.ejecucion);
+  // Fallback para respuestas sin ejecución (servidor viejo): solo saldoValor.
+  const ejecutado = ejec ? ejec.pctTotal : pct(item.saldoValor, item.cantidad * item.precioUnitario);
   const hasInsumos = item.insumos && item.insumos.length > 0;
 
   return (
@@ -124,15 +176,28 @@ const ItemRow = ({ item }) => {
           </div>
         </div>
         <div className="flex items-center gap-3 pl-6">
-          <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${ejecutado > 90 ? 'bg-danger' : ejecutado > 60 ? 'bg-warning' : 'bg-success'}`}
-              style={{ width: `${ejecutado}%` }}
-            />
-          </div>
+          {ejec ? (
+            <EjecucionBar ejec={ejec} />
+          ) : (
+            <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${ejecutado > 90 ? 'bg-danger' : ejecutado > 60 ? 'bg-warning' : 'bg-success'}`}
+                style={{ width: `${ejecutado}%` }}
+              />
+            </div>
+          )}
           <span className="text-xs text-slate-400 w-10 text-right">{ejecutado}%</span>
-          <span className="text-xs text-slate-500 w-28 text-right">Saldo: {fmtCOP(item.saldoValor)}</span>
+          <span className="text-xs text-slate-500 w-28 text-right">
+            Saldo: {fmtCOP(ejec ? ejec.saldo : item.saldoValor)}
+          </span>
         </div>
+        {ejec && (ejec.gastado > 0 || ejec.comprometido > 0) && (
+          <p className="text-xs text-slate-400 pl-6 mt-1">
+            Gastado {fmtCOP(ejec.gastado)}
+            {ejec.comprometido > 0 && <> · Comprometido {fmtCOP(ejec.comprometido)}</>}
+            {' '}de {fmtCOP(ejec.presupuesto)}
+          </p>
+        )}
       </div>
 
       {/* Insumos expandidos */}

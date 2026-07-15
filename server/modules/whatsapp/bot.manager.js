@@ -293,13 +293,29 @@ class BotManager {
 
     // Número del remitente. Con el nuevo direccionamiento LID de WhatsApp, el jid
     // puede venir como @lid; en ese caso Baileys expone el número real en un campo
-    // alterno. Probamos varias fuentes y nos quedamos con los dígitos.
+    // alterno (remoteJidAlt/participantAlt) o en su mapeo LID→número persistente.
     let senderJid = jid;
     if (jid.endsWith('@lid')) {
-      senderJid = m.key.remoteJidAlt || m.key.senderPn || m.key.participantAlt || jid;
+      senderJid = m.key.remoteJidAlt || m.key.participantAlt || '';
+      if (!senderJid || senderJid.endsWith('@lid')) {
+        try {
+          const pn = await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+          if (pn) senderJid = pn;
+        } catch (err) {
+          logger.warn(`[bot] Fallo consultando mapeo LID de ${jid}: ${err.message}`);
+        }
+      }
+      if (!senderJid || senderJid.endsWith('@lid')) {
+        // Sin número real no se puede rutear; responder "no estás registrado" a un
+        // usuario registrado (solo porque llegó como LID) es peor que callar.
+        logger.warn(`[bot] No se pudo resolver el número real del LID ${jid}; mensaje ignorado.`);
+        return;
+      }
     }
-    const phone = senderJid.split('@')[0].replace(/\D/g, '');
-    logger.info(`[bot] Mensaje de: ${phone}`);
+    // El jid puede traer sufijo de dispositivo (":12"); se corta ANTES de extraer
+    // dígitos para que no se peguen al número.
+    const phone = senderJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    logger.info(`[bot] Mensaje de: ${phone} (jid: ${jid})`);
 
     const reply = await routeIncoming(text, phone);
     if (reply) await this._reply(jid, reply, m);

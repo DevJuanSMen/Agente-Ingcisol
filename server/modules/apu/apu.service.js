@@ -25,9 +25,61 @@ const getAPUTree = async (companyId) => {
     },
   });
 
+  // ── Ejecución real por APU y por insumo, desde las líneas adjudicadas a OC ──
+  // "gastado" = OC pagadas (PAGADA/COMPLETADA); "comprometido" = OC en curso
+  // (EMITIDA/ENVIADA/ENTREGADA). El insumo se identifica por requisitionItem.
+  const apuIds = items.map((i) => i.id);
+  const PAGADO = ['PAGADA', 'COMPLETADA'];
+  const lineasOC = apuIds.length
+    ? await prisma.quotationItem.findMany({
+        where: {
+          purchaseOrder: { estado: { in: ['EMITIDA', 'ENVIADA', 'ENTREGADA', ...PAGADO] } },
+          OR: [{ itemApuId: { in: apuIds } }, { requisitionItem: { itemApuId: { in: apuIds } } }],
+        },
+        select: {
+          precioTotal: true,
+          itemApuId: true,
+          purchaseOrder: { select: { estado: true } },
+          requisitionItem: { select: { itemApuId: true, itemApuInsumoId: true } },
+        },
+      })
+    : [];
+
+  const ejecApu = new Map();
+  const ejecInsumo = new Map();
+  const acumular = (map, key, monto, pagado) => {
+    if (!key) return;
+    const e = map.get(key) || { gastado: 0, comprometido: 0 };
+    if (pagado) e.gastado += monto;
+    else e.comprometido += monto;
+    map.set(key, e);
+  };
+  for (const l of lineasOC) {
+    const monto = Number(l.precioTotal) || 0;
+    const pagado = PAGADO.includes(l.purchaseOrder?.estado);
+    acumular(ejecApu, l.itemApuId || l.requisitionItem?.itemApuId, monto, pagado);
+    acumular(ejecInsumo, l.requisitionItem?.itemApuInsumoId, monto, pagado);
+  }
+
   // Usar capitulo guardado, o inferir del primer segmento del código
   const tree = {};
   for (const item of items) {
+    const eApu = ejecApu.get(item.id) || { gastado: 0, comprometido: 0 };
+    item.ejecucion = {
+      presupuesto: Number(item.cantidad) * Number(item.precioUnitario),
+      gastado: eApu.gastado,
+      comprometido: eApu.comprometido,
+    };
+    for (const ins of item.insumos) {
+      const eIns = ejecInsumo.get(ins.id) || { gastado: 0, comprometido: 0 };
+      ins.ejecucion = {
+        // Presupuesto del insumo dentro del APU: su valor parcial por unidad de
+        // APU multiplicado por la cantidad contratada del APU.
+        presupuesto: Number(ins.precioTotal) * Number(item.cantidad),
+        gastado: eIns.gastado,
+        comprometido: eIns.comprometido,
+      };
+    }
     const chapter = item.capitulo || item.codigo.split('.')[0];
     if (!tree[chapter]) tree[chapter] = { capitulo: chapter, items: [] };
     tree[chapter].items.push(item);

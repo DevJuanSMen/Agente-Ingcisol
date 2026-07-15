@@ -7,6 +7,29 @@ import Button from '../../components/ui/Button';
 const fmtCOP = (v) => `$${Number(v || 0).toLocaleString('es-CO')}`;
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-CO') : '—';
 
+// Variación % de un precio cotizado contra la referencia del APU.
+// Negativa = por debajo del presupuesto (a favor); positiva = sobrecosto.
+const varPct = (precio, ref) => {
+  const r = Number(ref);
+  if (!r || r <= 0) return null;
+  return ((Number(precio) - r) / r) * 100;
+};
+const fmtVar = (v) =>
+  `${v > 0 ? '+' : ''}${v.toLocaleString('es-CO', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`;
+
+// Etiqueta de variación: verde si está a favor (≤ APU), rojo si excede.
+const VarBadge = ({ pct, className = '' }) => {
+  if (pct == null) return null;
+  return (
+    <span
+      className={`block text-xs font-medium ${pct > 0 ? 'text-red-500' : 'text-green-600'} ${className}`}
+      title={pct > 0 ? 'Sobre el precio APU' : 'Por debajo del precio APU'}
+    >
+      {fmtVar(pct)} vs APU
+    </span>
+  );
+};
+
 const ESTADO_COLOR = {
   EN_BUSQUEDA:          'bg-slate-100 text-slate-600',
   PENDIENTE_APROBACION: 'bg-amber-100 text-amber-700',
@@ -219,7 +242,8 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward
                 <> · Referencia APU: {fmtCOP(comp.refTotal)}
                   {comp.ahorroVsApu != null && (
                     <span className={comp.ahorroVsApu >= 0 ? 'text-green-700' : 'text-red-600'}>
-                      {' '}({comp.ahorroVsApu >= 0 ? 'ahorro' : 'sobrecosto'} {fmtCOP(Math.abs(comp.ahorroVsApu))})
+                      {' '}({comp.ahorroVsApu >= 0 ? 'ahorro' : 'sobrecosto'} {fmtCOP(Math.abs(comp.ahorroVsApu))}
+                      {varPct(comp.favoritoTotal, comp.refTotal) != null && `, ${fmtVar(varPct(comp.favoritoTotal, comp.refTotal))}`})
                     </span>
                   )}
                 </>
@@ -283,7 +307,7 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward
                             <span className={`text-sm font-semibold ${q.excedeApu ? 'text-red-600' : isMin ? 'text-green-700' : 'text-slate-700'}`}>
                               {fmtCOP(q.precioUnitario)}
                             </span>
-                            {q.excedeApu && <span className="block text-xs text-red-500">+ APU</span>}
+                            <VarBadge pct={varPct(q.precioUnitario, row.refPrice)} />
                             {isMin && !q.excedeApu && <span className="block text-xs text-green-500">más económico</span>}
                             {q.tiempoEntrega > 0 && <span className="block text-xs text-slate-400">{q.tiempoEntrega} días</span>}
                           </div>
@@ -301,9 +325,15 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward
                 {suppliers.map((sup) => {
                   const lowest = Math.min(...suppliers.map((s) => s.total));
                   const isLowest = sup.total === lowest && suppliers.length > 1;
+                  // Referencia APU solo de los ítems que este proveedor cotizó,
+                  // para que el % sea justo aunque la cobertura sea parcial.
+                  const refCubierto = rows.reduce((a, r) => {
+                    return quoteFor(r, sup.id) && r.refTotal != null ? a + r.refTotal : a;
+                  }, 0);
                   return (
                     <td key={sup.id} className={`px-4 py-3 text-center ${winnerId === sup.id ? 'bg-green-50' : sup.id === favId ? 'bg-amber-50' : ''}`}>
                       <span className={`text-sm font-bold ${isLowest ? 'text-green-700' : 'text-slate-700'}`}>{fmtCOP(sup.total)}</span>
+                      <VarBadge pct={varPct(sup.total, refCubierto)} className="font-normal" />
                       <span className="block text-xs text-slate-400 font-normal">{sup.count}/{comp.totalItems} ítems</span>
                     </td>
                   );
