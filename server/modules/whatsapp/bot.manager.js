@@ -334,7 +334,23 @@ class BotManager {
     const phone = senderJid.split('@')[0].split(':')[0].replace(/\D/g, '');
     logger.info(`[bot] Mensaje de: ${phone} (jid: ${jid})`);
 
-    const reply = await routeIncoming(text, phone);
+    // Un error en el ruteo/IA no puede terminar en silencio: se registra en
+    // BotParseLog (visible en el panel superadmin) y se avisa al remitente.
+    let reply;
+    try {
+      reply = await routeIncoming(text, phone);
+    } catch (err) {
+      logger.error(`[bot] Error ruteando mensaje de ${phone}: ${err.message}`);
+      await logParse({
+        contexto: 'ROUTE_ERROR',
+        entrada: text.slice(0, 2000),
+        exito: false,
+        error: `${err.message} (phone: ${phone})`,
+      }).catch(() => {});
+      reply =
+        '⚠️ Estoy teniendo un problema técnico para procesar tu mensaje. ' +
+        'Ya quedó registrado para revisión; intenta de nuevo en unos minutos.';
+    }
     if (reply) await this._reply(jid, reply, m);
   }
 

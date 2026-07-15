@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { verifyToken } = require('../../shared/middleware/auth');
 const { ok } = require('../../shared/utils/response');
-const { getGroq } = require('../../shared/utils/groq');
+const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
 const { buildDbContext } = require('../whatsapp/bot.context');
 const { logger } = require('../../shared/utils/logger');
 
@@ -29,7 +29,7 @@ router.post('/chat', async (req, res, next) => {
     const groq = getGroq();
 
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         {
           role: 'system',

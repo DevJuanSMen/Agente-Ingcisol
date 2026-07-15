@@ -303,11 +303,11 @@ const { similarity, bestMatch } = require('../../shared/utils/fuzzy');
 // no parseable (o falla), reintenta UNA vez con temperature 0 y recordatorio
 // estricto. Si aun así falla, lanza y el caller responde en tono natural.
 const groqJson = async ({ system, user, maxTokens = 800 }) => {
-  const { getGroq } = require('../../shared/utils/groq');
+  const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
   const groq = getGroq();
   const ask = async (temperature, extraSystem) => {
     const c = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         { role: 'system', content: extraSystem ? `${system}\n\n${extraSystem}` : system },
         { role: 'user', content: user },
@@ -764,7 +764,7 @@ const notifyDirectorsOrderUpdate = async (companyId, order, supplierName, parsed
 
 const groqFallback = async (text, companyId, opts = {}) => {
   try {
-    const { getGroq } = require('../../shared/utils/groq');
+    const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
     const groq = getGroq();
     const context = await buildDbContext(companyId);
 
@@ -784,7 +784,7 @@ DATOS ACTUALES DEL SISTEMA:
 ${context}`;
 
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
+      model: GROQ_MODEL_FAST,
       messages: [
         { role: 'system', content: systemContent },
         { role: 'user', content: text },
@@ -887,17 +887,34 @@ const buildResponse = async (text, companyId, user) => {
   // 2. TODO lo demás va al agente IA (lenguaje natural con herramientas reales).
   //    groqFallback queda solo como red de seguridad si el agente falla
   //    (p. ej. Groq caído a mitad del tool-calling).
+  let agentError = null;
   if (userId) {
     try {
       const { runAgent } = require('./bot.agent');
       const reply = await runAgent(text, companyId, { id: userId, rol });
       if (reply) return reply;
     } catch (err) {
+      agentError = err;
       logger.error('[bot.context] Error en agente IA:', err.message);
     }
   }
 
-  return groqFallback(text, companyId, { rol });
+  const fallback = await groqFallback(text, companyId, { rol });
+  if (fallback) return fallback;
+
+  // Ambos caminos de IA fallaron: NUNCA responder con silencio. Se registra la
+  // causa en BotParseLog (visible en el panel superadmin) y se avisa al usuario.
+  await logParse({
+    companyId,
+    contexto: 'AGENT_ERROR',
+    entrada: String(text).slice(0, 2000),
+    exito: false,
+    error: agentError ? agentError.message : 'Agente y fallback devolvieron vacío',
+  });
+  return (
+    '⚠️ Estoy teniendo un problema técnico para procesar tu mensaje en este momento. ' +
+    'Ya quedó registrado para revisión; intenta de nuevo en unos minutos o usa el panel web.'
+  );
 };
 
 module.exports = {

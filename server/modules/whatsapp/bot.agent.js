@@ -1,6 +1,6 @@
 const prisma = require('../../shared/db');
 const { logger } = require('../../shared/utils/logger');
-const { getGroq } = require('../../shared/utils/groq');
+const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
 const requisitionsService = require('../requisitions/requisitions.service');
 const botContext = require('./bot.context');
 
@@ -378,7 +378,7 @@ const runAgent = async (text, companyId, user) => {
 
   for (let i = 0; i < 5; i++) {
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages,
       tools,
       tool_choice: 'auto',
@@ -406,7 +406,7 @@ const runAgent = async (text, companyId, user) => {
 
   // Se agotaron las iteraciones de herramientas: pedir respuesta final sin tools.
   const final = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: GROQ_MODEL,
     messages,
     temperature: 0.2,
     max_tokens: 700,

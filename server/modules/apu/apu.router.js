@@ -9,7 +9,7 @@ const { analyzeExcel, confirmImport, previewExcel } = require('./excel.analyzer'
 const basicPricesSvc = require('../basicprices/basicprices.service');
 const budgetSvc = require('../budget/budget.service');
 const prisma = require('../../shared/db');
-const { getGroq } = require('../../shared/utils/groq');
+const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
@@ -194,7 +194,7 @@ router.post(
       const groq = getGroq();
 
       const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [{
           role: 'user',
           content: `Eres un experto en APU (Análisis de Precios Unitarios) de construcción en Colombia.

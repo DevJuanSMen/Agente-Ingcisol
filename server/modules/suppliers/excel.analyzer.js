@@ -1,6 +1,6 @@
 const XLSX = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
-const { getGroq } = require('../../shared/utils/groq');
+const { getGroq, GROQ_MODEL, GROQ_MODEL_FAST } = require('../../shared/utils/groq');
 const redis = require('../../shared/redis');
 const { logger } = require('../../shared/utils/logger');
 
@@ -71,7 +71,7 @@ const analyzeSuppliersExcel = async (buffer) => {
   logger.info(`[suppliers.analyzer] Enviando hoja "${sheet.nombre}" (${sheet.filas.length} filas) a Groq`);
 
   const completion = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: GROQ_MODEL,
     messages: [{ role: 'user', content: buildGroqPrompt(sheet) }],
     temperature: 0.1,
     max_tokens: 600,
@@ -122,7 +122,7 @@ const previewSuppliersExcel = async (buffer) => {
   let razon = '';
   try {
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [{ role: 'user', content: buildGroqPrompt(sheet) }],
       temperature: 0.1,
       max_tokens: 600,
