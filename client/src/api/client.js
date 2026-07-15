@@ -4,6 +4,10 @@ import { useAuthStore } from '../store/authStore';
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
+  // Sin timeout, una petición que agarra al servidor en pleno redeploy se cuelga
+  // para siempre y deja la UI "cargando" eterna. 60s cubre los análisis con IA
+  // (Excel) que son las llamadas más lentas legítimas.
+  timeout: 60_000,
 });
 
 api.interceptors.request.use((config) => {

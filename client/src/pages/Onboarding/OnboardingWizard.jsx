@@ -32,6 +32,7 @@ export default function OnboardingWizard() {
   const [state, setState] = useState(null); // { step, done, checks, missing }
   const [advancing, setAdvancing] = useState(false);
   const [advanceMsg, setAdvanceMsg] = useState(null);
+  const [finishing, setFinishing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -48,11 +49,28 @@ export default function OnboardingWizard() {
     loadProjects();
   }, [refresh, loadProjects]);
 
+  // Cierre del wizard. El guard de rutas (RequireSetup) decide con
+  // user.company.setupCompletedAt: navegar con el usuario viejo en memoria
+  // rebota de vuelta al wizard, así que se reintenta el refresh hasta que el
+  // dato fresco llegue (cubre redeploys/red intermitente) y LUEGO se navega.
   const finish = useCallback(async () => {
-    await refreshUser();
-    await loadProjects();
+    for (let i = 0; i < 5; i++) {
+      await refreshUser();
+      if (useAuthStore.getState().user?.company?.setupCompletedAt) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    await loadProjects().catch(() => {});
     navigate('/', { replace: true });
   }, [refreshUser, loadProjects, navigate]);
+
+  // Cuando el backend confirme done (por Finalizar o al recargar la página),
+  // cerrar una sola vez.
+  useEffect(() => {
+    if (state?.done && !finishing) {
+      setFinishing(true);
+      finish();
+    }
+  }, [state?.done, finishing, finish]);
 
   const handleAdvance = async () => {
     setAdvancing(true);
@@ -60,15 +78,11 @@ export default function OnboardingWizard() {
     try {
       const { data } = await api.post('/company/onboarding/advance');
       const next = data.data;
-      if (next.done) {
-        await finish();
-        return;
-      }
-      if (next.step === state?.step) {
+      if (!next.done && next.step === state?.step) {
         // El paso actual sigue incompleto: el backend dice exactamente qué falta.
         setAdvanceMsg(next.missing || 'Aún falta completar este paso.');
       }
-      setState(next);
+      setState(next); // si next.done, el efecto de arriba dispara finish()
     } catch (err) {
       setAdvanceMsg(err.response?.data?.message || 'Error al validar el paso.');
     } finally {
@@ -98,7 +112,14 @@ export default function OnboardingWizard() {
     );
   }
 
-  if (state.done) return <Navigate to="/" replace />;
+  if (state.done) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-3">
+        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-slate-600 font-medium">🎉 Configuración completa — entrando al panel…</p>
+      </div>
+    );
+  }
 
   const stepIdx = state.step - 1;
   const current = STEPS[stepIdx] || STEPS[0];

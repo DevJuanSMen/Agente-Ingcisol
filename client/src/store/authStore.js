@@ -60,8 +60,10 @@ export const useAuthStore = create(
           const { data } = await api.get('/auth/me');
           set({ user: data.data });
           await fetchPermissions(set);
-        } catch {
-          get().logout();
+        } catch (err) {
+          // Solo un 401 real invalida la sesión. Un error de red o un redeploy
+          // del servidor NO debe desloguear (dejaba al usuario fuera sin motivo).
+          if (err.response?.status === 401) get().logout();
         }
       },
 
