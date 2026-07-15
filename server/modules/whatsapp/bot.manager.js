@@ -256,6 +256,15 @@ class BotManager {
             return;
           }
 
+          // 440 = connectionReplaced: OTRA instancia abrió la misma sesión (pasa
+          // durante los deploys de Railway, cuando el worker viejo y el nuevo
+          // conviven unos segundos). Este proceso NO debe pelear por reconectar:
+          // el que se queda con la sesión es el proceso nuevo.
+          if (statusCode === DisconnectReason.connectionReplaced) {
+            logger.warn('[bot] Sesión tomada por otra instancia (deploy en curso); este proceso cede sin reintentar.');
+            return;
+          }
+
           // 515 = restartRequired: NO es un fallo, es un paso obligatorio del login
           // de Baileys (tras escanear/emparejar la conexión se cierra y hay que
           // re-abrirla con las credenciales ya guardadas). Se reconecta de INMEDIATO

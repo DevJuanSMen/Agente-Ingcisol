@@ -2,15 +2,16 @@ const { logger } = require('../../shared/utils/logger');
 const redis = require('../../shared/redis');
 const botManager = require('./bot.manager');
 
-// Cola FIFO POR EMPRESA para los envíos salientes del bot. Cada empresa procesa
-// un mensaje a la vez con un delay aleatorio entre cada uno, para que WhatsApp
-// no detecte ráfagas como spam y bloquee la sesión.
+// Cola FIFO POR EMPRESA para los envíos salientes del bot, PERSISTIDA EN REDIS:
+// antes era un Map en memoria y cada redeploy del worker (Railway reinicia el
+// proceso con cada push) borraba los mensajes pendientes a mitad de cola — así
+// se perdían invitaciones a proveedores. Ahora los trabajos viven en listas
+// Redis (sendq:<companyId>) y el worker las retoma al arrancar.
 //
-// Con la sesión ÚNICA global todas las colas entregan por el mismo número, así
-// que además del pacing por empresa hay un espaciado mínimo GLOBAL entre envíos
-// (dos empresas encolando a la vez no deben producir una ráfaga en la sesión).
-// Se mantienen colas por empresa para trazabilidad y para aplicar el flag
-// enabled por empresa justo antes de entregar.
+// El pacing se conserva: cada empresa procesa un mensaje a la vez con delay
+// aleatorio (anti-spam de WhatsApp) y hay un espaciado mínimo GLOBAL entre
+// envíos de toda la plataforma (la sesión es única). El flag enabled por
+// empresa se aplica justo antes de entregar.
 
 const MIN_MS = Number(process.env.WA_SEND_MIN_MS) || 4000;
 const MAX_MS = Number(process.env.WA_SEND_MAX_MS) || 10000;
@@ -20,15 +21,11 @@ const MAX_RETRIES = 2;
 const NOT_READY_WAIT_MS = 5000;
 const MAX_NOT_READY_WAITS = 60; // ~5 min máximo esperando readiness
 
-const queues = new Map(); // companyId -> { jobs: [], processing: boolean }
+const qKey = (companyId) => `sendq:${companyId}`;
+const processing = new Map(); // companyId -> boolean (lock por proceso)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randDelay = () => MIN_MS + Math.floor(Math.random() * Math.max(0, MAX_MS - MIN_MS));
-
-const queueFor = (companyId) => {
-  if (!queues.has(companyId)) queues.set(companyId, { jobs: [], processing: false });
-  return queues.get(companyId);
-};
 
 // Espaciado mínimo entre envíos de TODA la plataforma (sesión compartida).
 let lastGlobalSend = 0;
@@ -51,69 +48,98 @@ async function deliver(job) {
 }
 
 async function processQueue(companyId) {
-  const q = queueFor(companyId);
-  if (q.processing) return;
-  q.processing = true;
-  while (q.jobs.length) {
-    const job = q.jobs.shift();
+  if (processing.get(companyId)) return;
+  processing.set(companyId, true);
+  try {
+    for (;;) {
+      const raw = await redis.lpop(qKey(companyId));
+      if (!raw) break;
 
-    // Empresa excluida del bot por el superadmin ('0' explícito): se descarta.
-    // Sin flag = habilitada (las empresas nuevas no tienen flag en Redis).
-    const enabled = await redis.get(`whatsapp:${companyId}:enabled`).catch(() => null);
-    if (enabled === '0') {
-      logger.warn(`[sendQueue] Descartado envío a ${job.phone}: bot deshabilitado para empresa ${companyId}`);
-      continue;
-    }
-
-    // Si el cliente aún no está listo, esperamos sin consumir reintentos: el
-    // bot puede tardar en conectar el socket o reconectar tras un corte.
-    if (!botManager.isReady()) {
-      job.notReadyWaits = (job.notReadyWaits || 0) + 1;
-      if (job.notReadyWaits <= MAX_NOT_READY_WAITS) {
-        q.jobs.push(job);
-        await sleep(NOT_READY_WAIT_MS);
+      let job;
+      try {
+        job = JSON.parse(raw);
+      } catch {
+        logger.warn(`[sendQueue] Trabajo ilegible descartado (empresa ${companyId})`);
         continue;
       }
-      logger.error(
-        `[sendQueue] Descartado envío a ${job.phone}: el cliente WhatsApp nunca estuvo listo`
-      );
-      continue;
-    }
 
-    try {
-      await deliver(job);
-      logger.info(
-        `[sendQueue] Enviado ${job.type} a ${job.phone} (empresa ${companyId}) — cola: ${q.jobs.length}`
-      );
-    } catch (err) {
-      job.retries = (job.retries || 0) + 1;
-      if (job.retries <= MAX_RETRIES) {
-        logger.warn(
-          `[sendQueue] Falló envío a ${job.phone} (intento ${job.retries}): ${err.message} — reencolando`
-        );
-        q.jobs.push(job);
-      } else {
-        logger.error(`[sendQueue] Descartado envío a ${job.phone} tras ${job.retries} intentos: ${err.message}`);
+      // Empresa excluida del bot por el superadmin ('0' explícito): se descarta.
+      // Sin flag = habilitada (las empresas nuevas no tienen flag en Redis).
+      const enabled = await redis.get(`whatsapp:${companyId}:enabled`).catch(() => null);
+      if (enabled === '0') {
+        logger.warn(`[sendQueue] Descartado envío a ${job.phone}: bot deshabilitado para empresa ${companyId}`);
+        continue;
       }
+
+      // Si el cliente aún no está listo, se devuelve a la cola SIN consumir
+      // reintentos: el bot puede tardar en (re)conectar tras un corte o deploy.
+      if (!botManager.isReady()) {
+        job.notReadyWaits = (job.notReadyWaits || 0) + 1;
+        if (job.notReadyWaits <= MAX_NOT_READY_WAITS) {
+          await redis.rpush(qKey(companyId), JSON.stringify(job));
+          await sleep(NOT_READY_WAIT_MS);
+          continue;
+        }
+        logger.error(`[sendQueue] Descartado envío a ${job.phone}: el cliente WhatsApp nunca estuvo listo`);
+        continue;
+      }
+
+      try {
+        await deliver(job);
+        const restantes = await redis.llen(qKey(companyId)).catch(() => 0);
+        logger.info(`[sendQueue] Enviado ${job.type} a ${job.phone} (empresa ${companyId}) — cola: ${restantes}`);
+      } catch (err) {
+        job.retries = (job.retries || 0) + 1;
+        if (job.retries <= MAX_RETRIES) {
+          logger.warn(`[sendQueue] Falló envío a ${job.phone} (intento ${job.retries}): ${err.message} — reencolando`);
+          await redis.rpush(qKey(companyId), JSON.stringify(job));
+        } else {
+          logger.error(`[sendQueue] Descartado envío a ${job.phone} tras ${job.retries} intentos: ${err.message}`);
+        }
+      }
+
+      const pendientes = await redis.llen(qKey(companyId)).catch(() => 0);
+      if (pendientes) await sleep(randDelay());
     }
-    if (q.jobs.length) await sleep(randDelay());
+  } catch (err) {
+    logger.error(`[sendQueue] Error procesando cola de ${companyId}: ${err.message}`);
+  } finally {
+    processing.set(companyId, false);
   }
-  q.processing = false;
 }
+
+const enqueue = (companyId, job) => {
+  redis
+    .rpush(qKey(companyId), JSON.stringify(job))
+    .then(() => processQueue(companyId))
+    .catch((err) => logger.error(`[sendQueue] No se pudo encolar a ${job.phone}: ${err.message}`));
+};
 
 const enqueueText = (companyId, phone, text) => {
   if (!phone || !text) return;
-  queueFor(companyId).jobs.push({ type: 'text', companyId, phone, text });
-  processQueue(companyId);
+  enqueue(companyId, { type: 'text', companyId, phone, text });
 };
 
 const enqueueDocument = (companyId, phone, base64, filename, caption) => {
   if (!phone || !base64) return;
-  queueFor(companyId).jobs.push({ type: 'doc', companyId, phone, base64, filename, caption });
-  processQueue(companyId);
+  enqueue(companyId, { type: 'doc', companyId, phone, base64, filename, caption });
 };
 
-const queueSize = () =>
-  [...queues.values()].reduce((a, q) => a + q.jobs.length, 0);
+// Retoma las colas que quedaron con trabajos pendientes de un proceso anterior
+// (deploy/reinicio). Se llama al arrancar el worker.
+const resumeQueues = async () => {
+  try {
+    const keys = await redis.keys('sendq:*');
+    for (const key of keys) {
+      const pendientes = await redis.llen(key).catch(() => 0);
+      if (!pendientes) continue;
+      const companyId = key.slice('sendq:'.length);
+      logger.info(`[sendQueue] Retomando cola de ${companyId}: ${pendientes} mensaje(s) pendiente(s)`);
+      processQueue(companyId);
+    }
+  } catch (err) {
+    logger.error(`[sendQueue] Error retomando colas: ${err.message}`);
+  }
+};
 
-module.exports = { enqueueText, enqueueDocument, queueSize };
+module.exports = { enqueueText, enqueueDocument, resumeQueues };

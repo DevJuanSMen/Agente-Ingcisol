@@ -22,7 +22,7 @@ const prisma = require('./shared/db');
 const redis = require('./shared/redis');
 const botManager = require('./modules/whatsapp/bot.manager');
 const botFlows = require('./modules/whatsapp/bot.flows');
-const { enqueueText, enqueueDocument } = require('./modules/whatsapp/sendQueue');
+const { enqueueText, enqueueDocument, resumeQueues } = require('./modules/whatsapp/sendQueue');
 const { subscribeToCommands } = require('./modules/whatsapp/bot.ipc');
 const { generateOrderPdf, generateConsolidatedPdf, normalizeAwardedItems } = require('./shared/pdf/orderPdf');
 const requisitionsService = require('./modules/requisitions/requisitions.service');
@@ -91,6 +91,10 @@ initSmtpFromRedis(redis)
 botManager.restoreSession().catch((err) =>
   logger.error('[worker] Error restaurando sesión:', err.message)
 );
+
+// Retoma los envíos que quedaron encolados en Redis antes del reinicio/deploy
+// (la cola es persistente; sin esto se perdían invitaciones a proveedores).
+resumeQueues();
 
 // ── Notificar al director una requisición para aprobar ──────────────────────
 async function notifyReqForApproval(companyId, requisitionId, excludeUserId) {
