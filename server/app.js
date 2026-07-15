@@ -106,6 +106,10 @@ app.listen(PORT, () => {
   initGroqKeyFromRedis(redis)
     .then((loaded) => loaded && logger.info('API key de Groq cargada desde Redis (panel)'))
     .catch((err) => logger.warn(`No se pudo leer la key de Groq en Redis: ${err.message}`));
+  const { initSmtpFromRedis } = require('./shared/mailer');
+  initSmtpFromRedis(redis)
+    .then((loaded) => loaded && logger.info('Configuración SMTP cargada desde Redis (panel)'))
+    .catch((err) => logger.warn(`No se pudo leer la config SMTP en Redis: ${err.message}`));
 });
 
 module.exports = app;

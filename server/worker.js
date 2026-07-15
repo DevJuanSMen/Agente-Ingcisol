@@ -58,6 +58,10 @@ subscribeToCommands(async (cmd) => {
       const { initGroqKeyFromRedis } = require('./shared/utils/groq');
       const loaded = await initGroqKeyFromRedis(redis);
       logger.info(`[worker] API key de Groq recargada desde Redis: ${loaded ? 'sí' : 'no había'}`);
+    } else if (cmd.action === 'reload_smtp') {
+      const { initSmtpFromRedis } = require('./shared/mailer');
+      const loaded = await initSmtpFromRedis(redis);
+      logger.info(`[worker] Config SMTP recargada desde Redis: ${loaded ? 'sí' : 'no había'}`);
     } else if (cmd.action === 'send_password_reset_code') {
       const saludo = cmd.nombre ? `Hola ${cmd.nombre}, ` : '';
       const msg =
@@ -78,6 +82,10 @@ const { initGroqKeyFromRedis } = require('./shared/utils/groq');
 initGroqKeyFromRedis(redis)
   .then((loaded) => loaded && logger.info('[worker] API key de Groq cargada desde Redis (panel)'))
   .catch((err) => logger.warn(`[worker] No se pudo leer la key de Groq en Redis: ${err.message}`));
+const { initSmtpFromRedis } = require('./shared/mailer');
+initSmtpFromRedis(redis)
+  .then((loaded) => loaded && logger.info('[worker] Config SMTP cargada desde Redis (panel)'))
+  .catch((err) => logger.warn(`[worker] No se pudo leer la config SMTP en Redis: ${err.message}`));
 
 // Restaura la sesión global al arrancar (si ya fue vinculada por QR)
 botManager.restoreSession().catch((err) =>

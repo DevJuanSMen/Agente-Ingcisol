@@ -13,26 +13,81 @@ const { logger } = require('./utils/logger');
 // Si SMTP_USER/SMTP_PASS no están configuradas, el mailer queda deshabilitado y
 // sendMail() es un no-op con warning: el sistema NUNCA falla por falta de correo.
 
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASS = (process.env.SMTP_PASS || '').replace(/\s+/g, ''); // Gmail muestra la App Password con espacios
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
-const SMTP_PORT = Number(process.env.SMTP_PORT) || 465;
-const MAIL_FROM = process.env.MAIL_FROM || (SMTP_USER ? `PROCURA AI <${SMTP_USER}>` : '');
+// La configuración puede venir del entorno (Railway) o de Redis, guardada desde
+// el panel superadmin (misma estrategia que la API key de Groq: rotar el correo
+// o la App Password sin acceso a Railway y sin tocar código). Redis manda.
+const SMTP_REDIS_KEY = 'smtp:config';
 
-const isMailEnabled = () => Boolean(SMTP_USER && SMTP_PASS);
+const normalizeConfig = (raw = {}) => {
+  const user = String(raw.user || '').trim();
+  const pass = String(raw.pass || '').replace(/\s+/g, ''); // Gmail muestra la App Password con espacios
+  const host = String(raw.host || '').trim() || 'smtp.gmail.com';
+  const port = Number(raw.port) || 465;
+  const from = String(raw.from || '').trim() || (user ? `PROCURA AI <${user}>` : '');
+  return { user, pass, host, port, from };
+};
 
+let config = normalizeConfig({
+  user: process.env.SMTP_USER,
+  pass: process.env.SMTP_PASS,
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  from: process.env.MAIL_FROM,
+});
 let transporter = null;
-if (isMailEnabled()) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
+
+const isMailEnabled = () => Boolean(config.user && config.pass);
+
+const buildTransport = (cfg) =>
+  nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.port === 465,
+    auth: { user: cfg.user, pass: cfg.pass },
   });
-  logger.info(`[mailer] Correo habilitado vía ${SMTP_HOST}:${SMTP_PORT} como ${SMTP_USER}`);
-} else {
-  logger.warn('[mailer] SMTP_USER/SMTP_PASS no configuradas — el envío de correos está deshabilitado');
-}
+
+// Activa una configuración en este proceso (reconstruye el transport).
+const applySmtpConfig = (raw) => {
+  config = normalizeConfig(raw);
+  transporter = isMailEnabled() ? buildTransport(config) : null;
+  if (transporter) {
+    logger.info(`[mailer] Correo habilitado vía ${config.host}:${config.port} como ${config.user}`);
+  } else {
+    logger.warn('[mailer] SMTP sin usuario/App Password — el envío de correos está deshabilitado');
+  }
+};
+
+// Carga la configuración guardada en Redis (si existe) sobre la del entorno.
+// Se llama al arrancar api/worker y cuando el panel guarda cambios (IPC).
+const initSmtpFromRedis = async (redis) => {
+  const stored = await redis.get(SMTP_REDIS_KEY);
+  if (stored) {
+    applySmtpConfig(JSON.parse(stored));
+    return true;
+  }
+  return false;
+};
+
+// Valida credenciales contra el servidor SMTP real (login incluido) sin
+// guardarlas. Lanza si el servidor las rechaza.
+const testSmtpConfig = async (raw) => {
+  const cfg = normalizeConfig(raw);
+  if (!cfg.user || !cfg.pass) throw new Error('Faltan el correo o la App Password');
+  await buildTransport(cfg).verify();
+  return cfg;
+};
+
+// Estado para el panel (sin exponer la contraseña).
+const getSmtpStatus = () => ({
+  configurado: isMailEnabled(),
+  usuario: config.user || null,
+  host: config.host,
+  puerto: config.port,
+  remitente: config.from || null,
+});
+
+// Arranque: aplicar lo del entorno (Redis puede sobreescribir después).
+applySmtpConfig(config);
 
 // Plantilla base: colores de marca INGCISOL (naranja #E85D04 / ink).
 const wrapHtml = (titulo, cuerpoHtml) => `
@@ -59,7 +114,7 @@ const sendMail = async ({ to, subject, titulo, html, attachments }) => {
   if (!to) return false;
   try {
     await transporter.sendMail({
-      from: MAIL_FROM,
+      from: config.from,
       to,
       subject,
       html: wrapHtml(titulo || subject, html),
@@ -73,4 +128,12 @@ const sendMail = async ({ to, subject, titulo, html, attachments }) => {
   }
 };
 
-module.exports = { sendMail, isMailEnabled };
+module.exports = {
+  sendMail,
+  isMailEnabled,
+  applySmtpConfig,
+  initSmtpFromRedis,
+  testSmtpConfig,
+  getSmtpStatus,
+  SMTP_REDIS_KEY,
+};

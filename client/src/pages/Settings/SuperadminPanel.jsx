@@ -493,11 +493,145 @@ function BotDiagnostics() {
   );
 }
 
+// ── Tab: Correo (SMTP configurable en caliente, igual que la key de Groq) ─────
+function EmailTab() {
+  const [status, setStatus] = useState(null);
+  const [form, setForm] = useState({ user: '', pass: '', from: '', host: '', port: '' });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [testTo, setTestTo] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState(null);
+  const [advanced, setAdvanced] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const { data } = await api.get('/admin/smtp/status');
+      setStatus(data.data);
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setMsg(null);
+    try {
+      const { data } = await api.post('/admin/smtp', form);
+      setMsg({ ok: true, text: data.data?.message || 'Correo activado.' });
+      setForm((p) => ({ ...p, pass: '' }));
+      loadStatus();
+    } catch (err) {
+      setMsg({ ok: false, text: err.response?.data?.message || 'Error al guardar' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sendTest = async (e) => {
+    e.preventDefault();
+    if (!testTo.trim()) return;
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      const { data } = await api.post('/admin/smtp/test', { to: testTo.trim() });
+      setTestMsg({ ok: true, text: data.data?.message || 'Enviado.' });
+    } catch (err) {
+      setTestMsg({ ok: false, text: err.response?.data?.message || 'Error al enviar' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const field = (key, label, props = {}) => (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <input
+        value={form[key]}
+        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+        autoComplete="off"
+        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+        {...props}
+      />
+    </div>
+  );
+
+  return (
+    <div className="max-w-xl space-y-5">
+      <div>
+        <p className="text-sm font-medium text-slate-700">Correo saliente de la plataforma</p>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Con este correo se envían las credenciales, cotizaciones, órdenes de compra y avisos.
+          Se valida el login contra el servidor y se activa al instante, sin reiniciar nada.
+        </p>
+        {status && (
+          <div className={`mt-2 p-2.5 rounded-xl border text-xs ${
+            status.configurado ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}>
+            {status.configurado
+              ? <>✅ Configurado: <strong>{status.usuario}</strong> vía {status.host}:{status.puerto}</>
+              : '⚠️ Sin configurar — los correos no se están enviando.'}
+          </div>
+        )}
+      </div>
+
+      <form onSubmit={save} className="space-y-3">
+        {field('user', 'Correo remitente (Gmail)', { type: 'email', placeholder: 'procura.ingcisol@gmail.com', required: true })}
+        {field('pass', 'App Password', { type: 'password', placeholder: 'xxxx xxxx xxxx xxxx (los espacios no importan)', required: true })}
+        <p className="text-xs text-slate-400 -mt-1">
+          Gmail: la cuenta necesita verificación en 2 pasos → myaccount.google.com/apppasswords.
+        </p>
+        <button type="button" onClick={() => setAdvanced((p) => !p)} className="text-xs text-slate-400 hover:text-slate-600">
+          {advanced ? '▾ Ocultar avanzado' : '▸ Avanzado (otro servidor SMTP / remitente visible)'}
+        </button>
+        {advanced && (
+          <div className="grid grid-cols-2 gap-3">
+            {field('host', 'Servidor SMTP', { placeholder: 'smtp.gmail.com' })}
+            {field('port', 'Puerto', { type: 'number', placeholder: '465' })}
+            <div className="col-span-2">
+              {field('from', 'Remitente visible', { placeholder: 'PROCURA AI <correo@gmail.com>' })}
+            </div>
+          </div>
+        )}
+        <Button type="submit" size="sm" loading={saving}>Validar y activar</Button>
+        {msg && (
+          <p className={`text-xs font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>
+            {msg.ok ? '✅ ' : '❌ '}{msg.text}
+          </p>
+        )}
+      </form>
+
+      {status?.configurado && (
+        <div className="border-t border-slate-200 pt-4">
+          <p className="text-sm font-semibold text-slate-800 mb-2">📨 Enviar correo de prueba</p>
+          <form onSubmit={sendTest} className="flex gap-2">
+            <input
+              type="email"
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              placeholder="destinatario@correo.com"
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+            <Button type="submit" size="sm" variant="secondary" loading={testing} disabled={!testTo.trim()}>Enviar</Button>
+          </form>
+          {testMsg && (
+            <p className={`text-xs mt-2 font-medium ${testMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
+              {testMsg.ok ? '✅ ' : '❌ '}{testMsg.text}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Panel principal ───────────────────────────────────────────────────────────
 const TABS = [
   { id: 'companies', label: '🏢 Empresas' },
   { id: 'projects', label: '🏗️ Proyectos' },
   { id: 'bot', label: '💬 Bot WhatsApp' },
+  { id: 'email', label: '✉️ Correo' },
 ];
 
 export default function SuperadminPanel() {
@@ -571,6 +705,7 @@ export default function SuperadminPanel() {
         )}
         {tab === 'projects' && <ProjectsTab companies={companies} loading={loading} />}
         {tab === 'bot' && <BotTab />}
+        {tab === 'email' && <EmailTab />}
       </Card>
 
       {tab === 'companies' && (

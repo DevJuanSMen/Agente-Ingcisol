@@ -86,6 +86,64 @@ router.post('/groq-key', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Correo SMTP (rotación en caliente, sin acceso a Railway) ─────────────────
+// Igual que la key de Groq: se valida el login contra el servidor SMTP, se
+// guarda en Redis y se recarga en api + worker. La App Password nunca se expone.
+
+router.get('/smtp/status', async (req, res, next) => {
+  try {
+    const { getSmtpStatus } = require('../../shared/mailer');
+    ok(res, getSmtpStatus());
+  } catch (err) { next(err); }
+});
+
+router.post('/smtp', async (req, res, next) => {
+  try {
+    const { testSmtpConfig, applySmtpConfig, SMTP_REDIS_KEY } = require('../../shared/mailer');
+    const raw = {
+      user: req.body.user,
+      pass: req.body.pass,
+      host: req.body.host,
+      port: req.body.port,
+      from: req.body.from,
+    };
+    let cfg;
+    try {
+      cfg = await testSmtpConfig(raw); // login real contra el SMTP
+    } catch (err) {
+      const auth = /auth|credencial|username|password|535/i.test(err.message || '');
+      return res.status(400).json({
+        success: false,
+        message: auth
+          ? 'El servidor de correo rechazó las credenciales. Verifica el correo y la App Password (Gmail: cuenta con verificación en 2 pasos → App Passwords).'
+          : `No se pudo validar la configuración: ${err.message}`,
+      });
+    }
+    await redis.set(SMTP_REDIS_KEY, JSON.stringify(cfg));
+    applySmtpConfig(cfg); // proceso api
+    await publishCommand(redis, 'reload_smtp'); // proceso worker
+    ok(res, { message: 'Correo validado y activado en toda la plataforma.' });
+  } catch (err) { next(err); }
+});
+
+// Envía un correo de prueba al destinatario indicado con la config activa.
+router.post('/smtp/test', async (req, res, next) => {
+  try {
+    const { sendMail, isMailEnabled } = require('../../shared/mailer');
+    const to = String(req.body.to || '').trim();
+    if (!to) return res.status(400).json({ success: false, message: 'Falta el destinatario.' });
+    if (!isMailEnabled()) return res.status(400).json({ success: false, message: 'El correo no está configurado.' });
+    const sent = await sendMail({
+      to,
+      subject: 'Correo de prueba — PROCURA AI',
+      titulo: 'Prueba de configuración SMTP',
+      html: '<p>✅ Si estás leyendo esto, el envío de correos de PROCURA AI quedó configurado correctamente.</p>',
+    });
+    if (!sent) return res.status(500).json({ success: false, message: 'El envío falló; revisa los logs.' });
+    ok(res, { message: `Correo de prueba enviado a ${to}.` });
+  } catch (err) { next(err); }
+});
+
 // ── Diagnóstico del bot ──────────────────────────────────────────────────────
 
 // ¿Qué haría el bot con este número? Reproduce el matching de ruteo y explica
