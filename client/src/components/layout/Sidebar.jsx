@@ -108,8 +108,12 @@ export default function Sidebar({ open, onClose }) {
   const logout = useAuthStore((s) => s.logout);
 
   const isDirector = user?.rol === 'DIRECTOR';
+  const isSuperadmin = !!user?.esSuperadmin;
   const routeVisible = (r) => {
-    if (r.superadminOnly) return !!user?.esSuperadmin;
+    if (r.superadminOnly) return isSuperadmin;
+    // El superadmin es gestión de plataforma, no operación: sin Proyectos,
+    // Operaciones ni Configuración (no tiene proyectos/APUs propios).
+    if (isSuperadmin && r.mod) return false;
     if (r.directorOnly) return isDirector;
     if (r.mod) return isDirector || !!permissions?.[r.mod]?.ver;
     return true; // sin módulo → siempre visible (Dashboard)

@@ -1,5 +1,7 @@
 const prisma = require('../../shared/db');
 const redis = require('../../shared/redis');
+const { enqueueText } = require('../whatsapp/sendQueue');
+const { accessCacheKey } = require('../company/company.service');
 
 // Empresa "de sistema" que aloja al superadmin; se oculta del listado.
 const SYSTEM_COMPANY_ID = 'system-platform';
@@ -21,6 +23,8 @@ const listCompanies = async () => {
       nit: true,
       createdAt: true,
       setupCompletedAt: true,
+      approvalStatus: true,
+      rejectionReason: true,
       _count: { select: { users: true, projects: true } },
     },
     orderBy: { createdAt: 'desc' },
@@ -46,6 +50,8 @@ const getOverview = async () => {
       createdAt: true,
       onboardingStep: true,
       setupCompletedAt: true,
+      approvalStatus: true,
+      rejectionReason: true,
       users: {
         select: { id: true, nombre: true, email: true, rol: true, whatsapp: true, activo: true },
         orderBy: { createdAt: 'asc' },
@@ -64,6 +70,46 @@ const getOverview = async () => {
       bot: { enabled: await botEnabled(c.id) },
     }))
   );
+};
+
+// ── Solicitudes de nuevo usuario (aprobación tras onboarding) ───────────────
+// El director queda en PENDING al terminar el wizard (company.service.
+// advanceOnboarding); no entra al panel hasta que el superadmin apruebe aquí.
+
+const notifyDirectors = async (companyId, message) => {
+  const directors = await prisma.user.findMany({
+    where: { companyId, rol: 'DIRECTOR', activo: true, esSuperadmin: false },
+    select: { whatsapp: true },
+  });
+  for (const d of directors) {
+    if (d.whatsapp) enqueueText(companyId, d.whatsapp, message);
+  }
+};
+
+const approveCompany = async (companyId) => {
+  const company = await prisma.company.update({
+    where: { id: companyId },
+    data: { approvalStatus: 'APPROVED', approvedAt: new Date(), rejectedAt: null, rejectionReason: null },
+  });
+  await redis.del(accessCacheKey(companyId)).catch(() => {});
+  await notifyDirectors(
+    companyId,
+    `✅ *PROCURA AI*\n\n¡Usuario aprobado exitosamente! *${company.razonSocial}* ya está activa. Ingresa a la plataforma para empezar a operar.`
+  );
+  return company;
+};
+
+const rejectCompany = async (companyId, motivo) => {
+  const company = await prisma.company.update({
+    where: { id: companyId },
+    data: { approvalStatus: 'REJECTED', rejectedAt: new Date(), rejectionReason: motivo },
+  });
+  await redis.del(accessCacheKey(companyId)).catch(() => {});
+  await notifyDirectors(
+    companyId,
+    `⚠️ *PROCURA AI*\n\nTu solicitud para *${company.razonSocial}* fue rechazada.\nMotivo: ${motivo}\n\nCorrige la configuración desde el asistente y vuelve a enviarla para revisión.`
+  );
+  return company;
 };
 
 // Estado de la sesión ÚNICA global de WhatsApp (QR del superadmin).
@@ -105,4 +151,7 @@ const getBotLogs = async (limit = 30) => {
   return logs.map((l) => ({ ...l, empresa: l.companyId ? nameById.get(l.companyId) || l.companyId : null }));
 };
 
-module.exports = { listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, getBotLogs, SYSTEM_COMPANY_ID };
+module.exports = {
+  listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, getBotLogs, SYSTEM_COMPANY_ID,
+  approveCompany, rejectCompany,
+};

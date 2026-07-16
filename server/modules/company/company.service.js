@@ -20,7 +20,10 @@ const REQUIRED_COMPANY_FIELDS = [
   ['firmaUrl', 'la firma digital'],
 ];
 
-const setupCacheKey = (companyId) => `company:${companyId}:setupDone`;
+// Clave de caché compartida con el middleware requireSetupComplete y con
+// admin.service (aprobar/rechazar). Codifica el estado combinado de onboarding
+// + aprobación: 'incomplete' | 'pending' | 'approved' | 'rejected'.
+const accessCacheKey = (companyId) => `company:${companyId}:access`;
 
 const computeOnboarding = async (companyId) => {
   const company = await prisma.company.findUnique({ where: { id: companyId } });
@@ -81,26 +84,40 @@ const getOnboarding = async (companyId) => {
     const completedAt = new Date();
     await prisma.company.update({
       where: { id: companyId },
-      data: { onboardingStep: state.step, setupCompletedAt: completedAt },
+      data: { onboardingStep: state.step, setupCompletedAt: completedAt, approvalStatus: 'PENDING' },
     });
-    await redis.del(setupCacheKey(companyId)).catch(() => {});
-    return { ...state, completedAt };
+    await redis.del(accessCacheKey(companyId)).catch(() => {});
+    return { ...state, completedAt, approvalStatus: 'PENDING' };
   }
   return state;
 };
 
-// Re-valida contra BD y persiste el avance. Al completarse el último paso fija
-// setupCompletedAt e invalida el caché del middleware de bloqueo.
+// Re-valida contra BD y persiste el avance. Al completarse el último paso por
+// primera vez fija setupCompletedAt y manda la empresa a PENDING (solicitud de
+// aprobación al superadmin). Si ya estaba RECHAZADA y el director corrigió y
+// volvió a completar los pasos, reenvía a PENDING otra vez. Invalida el caché
+// del middleware de bloqueo en ambos casos.
 const advanceOnboarding = async (companyId) => {
   const { company, state } = await computeOnboarding(companyId);
 
   const data = { onboardingStep: state.step };
-  if (state.done && !company.setupCompletedAt) data.setupCompletedAt = new Date();
-  if (state.step !== company.onboardingStep || data.setupCompletedAt) {
+  if (state.done && !company.setupCompletedAt) {
+    data.setupCompletedAt = new Date();
+    data.approvalStatus = 'PENDING';
+  } else if (state.done && company.approvalStatus === 'REJECTED') {
+    data.approvalStatus = 'PENDING';
+    data.rejectedAt = null;
+    data.rejectionReason = null;
+  }
+  if (state.step !== company.onboardingStep || data.setupCompletedAt || data.approvalStatus) {
     await prisma.company.update({ where: { id: companyId }, data });
   }
-  if (state.done) await redis.del(setupCacheKey(companyId)).catch(() => {});
-  return { ...state, completedAt: data.setupCompletedAt || company.setupCompletedAt };
+  if (state.done) await redis.del(accessCacheKey(companyId)).catch(() => {});
+  return {
+    ...state,
+    completedAt: data.setupCompletedAt || company.setupCompletedAt,
+    approvalStatus: data.approvalStatus || company.approvalStatus,
+  };
 };
 
 const getCompany = async (companyId) => {
@@ -149,5 +166,5 @@ module.exports = {
   updateFirma,
   getOnboarding,
   advanceOnboarding,
-  setupCacheKey,
+  accessCacheKey,
 };

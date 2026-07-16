@@ -31,6 +31,7 @@ import PermissionsSettings from './pages/Settings/PermissionsSettings';
 import SuperadminPanel from './pages/Settings/SuperadminPanel';
 import OnboardingWizard from './pages/Onboarding/OnboardingWizard';
 import PendingSetup from './pages/Onboarding/PendingSetup';
+import ApprovalPending from './pages/Onboarding/ApprovalPending';
 
 function ProtectedRoute({ children }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -62,9 +63,14 @@ function RequireSetup({ children }) {
   const company = user.company || {};
   if (!('setupCompletedAt' in company)) return <FullScreenLoader />;
 
-  if (company.setupCompletedAt) return children;
-  if (user.rol === 'DIRECTOR') return <Navigate to="/onboarding" replace />;
-  return <PendingSetup />;
+  if (!company.setupCompletedAt) {
+    if (user.rol === 'DIRECTOR') return <Navigate to="/onboarding" replace />;
+    return <PendingSetup />;
+  }
+  // Onboarding completo pero el superadmin aún no aprobó (o rechazó) la
+  // configuración inicial: nadie de la empresa entra al panel hasta entonces.
+  if (company.approvalStatus && company.approvalStatus !== 'APPROVED') return <ApprovalPending />;
+  return children;
 }
 
 export default function App() {

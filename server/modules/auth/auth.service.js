@@ -53,7 +53,14 @@ const register = async ({ razonSocial, nit, nombre, email, password, whatsapp })
         whatsapp: whatsapp || null,
         rol: 'DIRECTOR',
       },
-      include: { company: { select: { razonSocial: true, onboardingStep: true, setupCompletedAt: true } } },
+      include: {
+        company: {
+          select: {
+            razonSocial: true, onboardingStep: true, setupCompletedAt: true,
+            approvalStatus: true, rejectionReason: true,
+          },
+        },
+      },
     });
   });
 
@@ -65,7 +72,14 @@ const register = async ({ razonSocial, nit, nombre, email, password, whatsapp })
 const login = async (email, password) => {
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { company: { select: { razonSocial: true, onboardingStep: true, setupCompletedAt: true } } },
+    include: {
+      company: {
+        select: {
+          razonSocial: true, onboardingStep: true, setupCompletedAt: true,
+          approvalStatus: true, rejectionReason: true,
+        },
+      },
+    },
   });
 
   if (!user || !user.activo) {
@@ -95,7 +109,10 @@ const me = async (userId) => {
     where: { id: userId },
     include: {
       company: {
-        select: { id: true, razonSocial: true, nit: true, logoUrl: true, onboardingStep: true, setupCompletedAt: true },
+        select: {
+          id: true, razonSocial: true, nit: true, logoUrl: true, onboardingStep: true, setupCompletedAt: true,
+          approvalStatus: true, rejectionReason: true,
+        },
       },
     },
   });

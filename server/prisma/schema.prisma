@@ -31,6 +31,12 @@ enum EstadoDelegacion {
   REVOCADA
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum Segmento {
   MATERIALES
   EQUIPOS
@@ -98,9 +104,9 @@ enum EstadoOrden {
 // ─── Modelos ──────────────────────────────────────────────────────────────────
 
 model Company {
-  id                   String    @id @default(cuid())
+  id                   String         @id @default(cuid())
   razonSocial          String
-  nit                  String    @unique
+  nit                  String         @unique
   representanteLegal   String?
   emailCorporativo     String?
   telefono             String?
@@ -109,18 +115,26 @@ model Company {
   banco                String?
   tipoCuenta           String?
   numeroCuenta         String?
-  logoUrl              String?   @db.Text
-  firmaUrl             String?   @db.Text
+  logoUrl              String?        @db.Text
+  firmaUrl             String?        @db.Text
   // Configuración tributaria (DIAN) por defecto de la empresa
-  ivaPorcentaje        Decimal   @default(19) @db.Decimal(5, 2)
-  retefuentePorcentaje Decimal   @default(0) @db.Decimal(5, 2)
-  reteIcaPorMil        Decimal   @default(0) @db.Decimal(6, 3)
+  ivaPorcentaje        Decimal        @default(19) @db.Decimal(5, 2)
+  retefuentePorcentaje Decimal        @default(0) @db.Decimal(5, 2)
+  reteIcaPorMil        Decimal        @default(0) @db.Decimal(6, 3)
   // Onboarding obligatorio del director (wizard secuencial):
   // 1=empresa 2=usuarios 3=proyecto 4=presupuesto 5=proveedores
-  onboardingStep       Int       @default(1)
+  onboardingStep       Int            @default(1)
   setupCompletedAt     DateTime? // null = configuración incompleta
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  // Aprobación del superadmin tras el onboarding. Default APPROVED para no
+  // bloquear empresas que ya operaban antes de esta funcionalidad; solo pasa a
+  // PENDING explícitamente al completar el onboarding por primera vez
+  // (company.service.advanceOnboarding).
+  approvalStatus       ApprovalStatus @default(APPROVED)
+  approvedAt           DateTime?
+  rejectedAt           DateTime?
+  rejectionReason      String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
   users           User[]
   rolePermissions RolePermission[]

@@ -67,12 +67,18 @@ function CompaniesTab({ companies, loading, onToggleBot, acting }) {
                 <td className="px-3 py-2.5 text-center text-slate-600">{c.users?.length ?? 0}</td>
                 <td className="px-3 py-2.5 text-center text-slate-600">{c.projects?.length ?? 0}</td>
                 <td className="px-3 py-2.5">
-                  {c.setupCompletedAt ? (
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700">✓ Completa</span>
-                  ) : (
+                  {!c.setupCompletedAt ? (
                     <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">
                       Paso {c.onboardingStep ?? 1}/5
                     </span>
+                  ) : c.approvalStatus === 'APPROVED' ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700">✓ Aprobada</span>
+                  ) : c.approvalStatus === 'REJECTED' ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700" title={c.rejectionReason || ''}>
+                      ❌ Rechazada
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">⏳ Por aprobar</span>
                   )}
                 </td>
                 <td className="px-3 py-2.5 text-slate-500">{fmtD(c.createdAt)}</td>
@@ -130,6 +136,87 @@ function CompaniesTab({ companies, loading, onToggleBot, acting }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ── Tab: Solicitudes (aprobar/rechazar empresas que terminaron el onboarding) ─
+function RequestsTab({ companies, loading, onApprove, onReject, acting }) {
+  const [rejectingId, setRejectingId] = useState(null);
+  const [motivo, setMotivo] = useState('');
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10">
+        <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const pending = companies.filter((c) => c.setupCompletedAt && c.approvalStatus === 'PENDING');
+
+  if (!pending.length) {
+    return <div className="text-center py-12 text-slate-400 text-sm">Sin solicitudes pendientes 🎉</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {pending.map((c) => {
+        const director = (c.users || []).find((u) => u.rol === 'DIRECTOR');
+        const isRejecting = rejectingId === c.id;
+        return (
+          <div key={c.id} className="p-4 border border-slate-200 rounded-xl space-y-2">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">{c.razonSocial}</p>
+                <p className="text-xs text-slate-500">NIT {c.nit} · {c.ciudad || '—'}</p>
+                {director && (
+                  <p className="text-xs text-slate-500 mt-1">
+                    Director: <span className="font-medium text-slate-700">{director.nombre}</span>
+                    {director.whatsapp && <> · 📱 {director.whatsapp}</>}
+                    {director.email && <> · {director.email}</>}
+                  </p>
+                )}
+                <p className="text-xs text-slate-400 mt-1">Configuración completada: {fmtD(c.setupCompletedAt)}</p>
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
+                <Button size="sm" loading={acting === c.id} onClick={() => onApprove(c)}>✅ Aprobar</Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={acting === c.id}
+                  onClick={() => { setRejectingId(isRejecting ? null : c.id); setMotivo(''); }}
+                >
+                  ❌ Rechazar
+                </Button>
+              </div>
+            </div>
+            {isRejecting && (
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <textarea
+                  value={motivo}
+                  onChange={(e) => setMotivo(e.target.value)}
+                  placeholder="Motivo del rechazo (se envía al director por WhatsApp)"
+                  rows={2}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <div className="flex gap-2 justify-end">
+                  <Button size="sm" variant="ghost" onClick={() => { setRejectingId(null); setMotivo(''); }}>Cancelar</Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    loading={acting === c.id}
+                    disabled={!motivo.trim()}
+                    onClick={async () => { await onReject(c, motivo.trim()); setRejectingId(null); setMotivo(''); }}
+                  >
+                    Confirmar rechazo
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -628,6 +715,7 @@ function EmailTab() {
 
 // ── Panel principal ───────────────────────────────────────────────────────────
 const TABS = [
+  { id: 'requests', label: '📥 Solicitudes' },
   { id: 'companies', label: '🏢 Empresas' },
   { id: 'projects', label: '🏗️ Proyectos' },
   { id: 'bot', label: '💬 Bot WhatsApp' },
@@ -635,7 +723,7 @@ const TABS = [
 ];
 
 export default function SuperadminPanel() {
-  const [tab, setTab] = useState('companies');
+  const [tab, setTab] = useState('requests');
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(null);
@@ -668,8 +756,34 @@ export default function SuperadminPanel() {
     }
   };
 
+  const approveRequest = async (c) => {
+    if (!confirm(`¿Aprobar a "${c.razonSocial}"? Su director recibirá un WhatsApp de confirmación y podrá empezar a operar.`)) return;
+    setActing(c.id);
+    try {
+      await api.post(`/admin/companies/${c.id}/approve`);
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al aprobar');
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const rejectRequest = async (c, motivo) => {
+    setActing(c.id);
+    try {
+      await api.post(`/admin/companies/${c.id}/reject`, { motivo });
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al rechazar');
+    } finally {
+      setActing(null);
+    }
+  };
+
   const totalProjects = companies.reduce((a, c) => a + (c.projects?.length || 0), 0);
   const totalUsers = companies.reduce((a, c) => a + (c.users?.length || 0), 0);
+  const pendingCount = companies.filter((c) => c.setupCompletedAt && c.approvalStatus === 'PENDING').length;
 
   return (
     <div className="space-y-5">
@@ -694,12 +808,15 @@ export default function SuperadminPanel() {
                 : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t.label}
+            {t.label}{t.id === 'requests' && pendingCount > 0 ? ` (${pendingCount})` : ''}
           </button>
         ))}
       </div>
 
       <Card>
+        {tab === 'requests' && (
+          <RequestsTab companies={companies} loading={loading} onApprove={approveRequest} onReject={rejectRequest} acting={acting} />
+        )}
         {tab === 'companies' && (
           <CompaniesTab companies={companies} loading={loading} onToggleBot={toggleBot} acting={acting} />
         )}

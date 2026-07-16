@@ -22,6 +22,22 @@ router.get('/overview', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Solicitudes de nuevo usuario (aprobación tras onboarding) ───────────────
+
+router.post('/companies/:id/approve', async (req, res, next) => {
+  try {
+    ok(res, await adminService.approveCompany(req.params.id));
+  } catch (err) { next(err); }
+});
+
+router.post('/companies/:id/reject', async (req, res, next) => {
+  try {
+    const motivo = String(req.body.motivo || '').trim();
+    if (!motivo) return res.status(400).json({ error: true, message: 'Debes indicar un motivo de rechazo.' });
+    ok(res, await adminService.rejectCompany(req.params.id, motivo));
+  } catch (err) { next(err); }
+});
+
 // ── Sesión ÚNICA global de WhatsApp (QR del superadmin) ─────────────────────
 
 router.get('/whatsapp/status', async (req, res, next) => {

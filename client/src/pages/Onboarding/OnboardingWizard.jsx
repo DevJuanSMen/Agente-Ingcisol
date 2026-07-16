@@ -68,14 +68,20 @@ export default function OnboardingWizard() {
     navigate('/', { replace: true });
   }, [refreshUser, loadProjects, navigate]);
 
+  // La empresa ya completó los 5 pasos pero el superadmin rechazó la
+  // configuración: no cerramos el wizard solo porque done=true, hay que dejar
+  // que el director revise/corrija y reenvíe a mano (ver handleResubmit).
+  const rejected = user?.company?.approvalStatus === 'REJECTED';
+
   // Cuando el backend confirme done (por Finalizar o al recargar la página),
-  // cerrar una sola vez.
+  // cerrar una sola vez. No aplica si está rechazada: ahí se cierra con el
+  // botón explícito de reenvío.
   useEffect(() => {
-    if (state?.done && !finishing) {
+    if (state?.done && !finishing && !rejected) {
       setFinishing(true);
       finish();
     }
-  }, [state?.done, finishing, finish]);
+  }, [state?.done, finishing, finish, rejected]);
 
   const handleAdvance = async () => {
     setAdvancing(true);
@@ -92,6 +98,39 @@ export default function OnboardingWizard() {
       setAdvanceMsg(err.response?.data?.message || 'Error al validar el paso.');
     } finally {
       setAdvancing(false);
+    }
+  };
+
+  // Reenvía la configuración corregida a revisión: persiste el avance (el
+  // backend detecta REJECTED + done y vuelve a PENDING) y navega solo cuando
+  // el estado fresco confirma el cambio.
+  const handleResubmit = async () => {
+    setAdvancing(true);
+    setAdvanceMsg(null);
+    try {
+      await api.post('/company/onboarding/advance');
+      await finish();
+    } catch (err) {
+      setAdvanceMsg(err.response?.data?.message || 'Error al reenviar la configuración.');
+    } finally {
+      setAdvancing(false);
+    }
+  };
+
+  // Contenido de cada paso, reutilizado tanto en el wizard normal como en la
+  // pantalla de corrección tras un rechazo.
+  const renderStep = (key) => {
+    switch (key) {
+      case 'company': return <CompanyForm onChanged={refresh} />;
+      case 'users': return <UsersSettings embedded onChanged={refresh} />;
+      case 'project': return state?.checks?.project ? (
+        <div className="p-4 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+          ✅ Proyecto creado. Pulsa <b>Continuar</b> para seguir con el presupuesto.
+        </div>
+      ) : <ProjectForm embedded onCreated={handleProjectCreated} />;
+      case 'budget': return <MasterImport embedded onChanged={refresh} />;
+      case 'suppliers': return <SupplierList embedded onChanged={refresh} />;
+      default: return null;
     }
   };
 
@@ -113,6 +152,53 @@ export default function OnboardingWizard() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (rejected) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <header className="sticky top-0 z-30 bg-white border-b border-slate-200">
+          <div className="max-w-3xl mx-auto px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold tracking-tight">
+                  PROCURA <span className="text-primary">AI</span>
+                  <span className="ml-2 font-normal text-slate-400">Corrige tu configuración</span>
+                </p>
+                <h1 className="text-lg font-bold text-slate-800 mt-0.5">Revisa y reenvía para aprobación</h1>
+              </div>
+              <Button onClick={handleResubmit} loading={advancing}>Reenviar para revisión ✓</Button>
+            </div>
+            <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              ⚠️ Rechazada: {user.company?.rejectionReason || 'contacta al equipo de PROCURA AI para más detalles.'}
+            </div>
+            {advanceMsg && (
+              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+                ⚠️ {advanceMsg}
+              </div>
+            )}
+          </div>
+        </header>
+
+        <main className="max-w-3xl mx-auto px-5 py-6 space-y-8">
+          {STEPS.map((s) => (
+            <section key={s.key}>
+              <h2 className="text-sm font-semibold text-slate-700 mb-2">{s.title}</h2>
+              {renderStep(s.key)}
+            </section>
+          ))}
+
+          <div className="pt-2 pb-10 text-center">
+            <button
+              onClick={logout}
+              className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+            >
+              Cerrar sesión y continuar después →
+            </button>
+          </div>
+        </main>
       </div>
     );
   }
@@ -191,19 +277,7 @@ export default function OnboardingWizard() {
       <main className="max-w-3xl mx-auto px-5 py-6 space-y-4">
         <p className="text-sm text-slate-500">{current.desc}</p>
 
-        {current.key === 'company' && <CompanyForm onChanged={refresh} />}
-        {current.key === 'users' && <UsersSettings embedded onChanged={refresh} />}
-        {current.key === 'project' && (
-          state.checks?.project ? (
-            <div className="p-4 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
-              ✅ Proyecto creado. Pulsa <b>Continuar</b> para seguir con el presupuesto.
-            </div>
-          ) : (
-            <ProjectForm embedded onCreated={handleProjectCreated} />
-          )
-        )}
-        {current.key === 'budget' && <MasterImport embedded onChanged={refresh} />}
-        {current.key === 'suppliers' && <SupplierList embedded onChanged={refresh} />}
+        {renderStep(current.key)}
 
         <div className="pt-4 pb-10 text-center">
           <button
