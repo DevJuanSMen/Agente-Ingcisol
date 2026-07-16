@@ -129,6 +129,126 @@ function InviteModal({ quotationId, onClose, onSuccess }) {
   );
 }
 
+// ── Manual Quote Modal ──────────────────────────────────────────────────────
+// Carga a mano el precio que dio un proveedor (llamada telefónica, correo, o
+// cuando el bot de WhatsApp no está disponible) — mismo endpoint que usaría
+// el flujo automático, sin depender de que el proveedor responda por WhatsApp.
+function ManualQuoteModal({ quotation, onClose, onSuccess }) {
+  const [suppliers, setSuppliers]   = useState([]);
+  const [supplierId, setSupplierId] = useState('');
+  const [precios, setPrecios]       = useState({});   // reqItemId -> precioUnitario
+  const [entregas, setEntregas]     = useState({});    // reqItemId -> tiempoEntrega
+  const [loading, setLoading]       = useState(true);
+  const [sending, setSending]       = useState(false);
+
+  const items = quotation.requisition?.items || [];
+
+  useEffect(() => {
+    api.get('/suppliers').then((r) => setSuppliers(r.data.data || [])).finally(() => setLoading(false));
+  }, []);
+
+  const handleSubmit = async () => {
+    if (!supplierId) return;
+    const entries = items.filter((it) => parseFloat(precios[it.id]) > 0);
+    if (!entries.length) return;
+    setSending(true);
+    try {
+      for (const it of entries) {
+        await api.post(`/quotations/${quotation.id}/items`, {
+          supplierId,
+          itemApuId: it.itemApuId || null,
+          descripcion: it.descripcion,
+          cantidad: it.cantidad,
+          precioUnitario: precios[it.id],
+          tiempoEntrega: entregas[it.id] || 0,
+        });
+      }
+      onSuccess();
+      onClose();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error al guardar la cotización manual');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+          <h2 className="text-base font-bold text-slate-800">Cargar cotización manual</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+        </div>
+        <div className="px-6 py-4 max-h-[65vh] overflow-auto space-y-4">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Proveedor</label>
+                <select
+                  value={supplierId}
+                  onChange={(e) => setSupplierId(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="">Selecciona un proveedor…</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.nombre}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-500 uppercase">Precios cotizados</p>
+                {items.map((it) => (
+                  <div key={it.id} className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
+                    <div className="min-w-0">
+                      <p className="text-sm text-slate-700 truncate">{it.descripcion}</p>
+                      <p className="text-xs text-slate-400">{Number(it.cantidad).toLocaleString('es-CO')} {it.unidad}</p>
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="Precio unit."
+                      value={precios[it.id] || ''}
+                      onChange={(e) => setPrecios((p) => ({ ...p, [it.id]: e.target.value }))}
+                      className="w-28 px-2 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="Días"
+                      value={entregas[it.id] || ''}
+                      onChange={(e) => setEntregas((p) => ({ ...p, [it.id]: e.target.value }))}
+                      className="w-16 px-2 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
+          <span className="text-sm text-slate-500">Precio unit. · días de entrega</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={onClose}>Cancelar</Button>
+            <Button
+              size="sm"
+              loading={sending}
+              disabled={!supplierId || !items.some((it) => parseFloat(precios[it.id]) > 0)}
+              onClick={handleSubmit}
+            >
+              Guardar cotización
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Select Winner Modal ─────────────────────────────────────────────────────
 function WinnerModal({ quotationId, supplier, onClose, onSuccess }) {
   const [fecha, setFecha]   = useState('');
@@ -189,7 +309,7 @@ function WinnerModal({ quotationId, supplier, onClose, onSuccess }) {
 }
 
 // ── Comparative Table ───────────────────────────────────────────────────────
-function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward, autoLoading }) {
+function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onManualClick, onAutoAward, autoLoading }) {
   const comp = quotation.comparison || { rows: [], suppliers: [], favoritoSupplierId: null };
   const rows = comp.rows || [];
 
@@ -225,6 +345,9 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward
             )}
             <Button size="sm" variant="secondary" onClick={onInviteClick}>
               + Invitar proveedores
+            </Button>
+            <Button size="sm" variant="secondary" onClick={onManualClick}>
+              + Cargar cotización manual
             </Button>
           </div>
         )}
@@ -369,6 +492,7 @@ function ComparativeTable({ quotation, onWinnerClick, onInviteClick, onAutoAward
 function QuotationCard({ q, onRefresh }) {
   const [expanded, setExpanded]     = useState(false);
   const [inviteModal, setInvite]    = useState(false);
+  const [manualModal, setManual]    = useState(false);
   const [winnerModal, setWinner]    = useState(null); // { id, nombre }
   const [autoLoading, setAutoLoading] = useState(false);
 
@@ -446,6 +570,7 @@ function QuotationCard({ q, onRefresh }) {
             quotation={q}
             onWinnerClick={(sup) => setWinner(sup)}
             onInviteClick={() => setInvite(true)}
+            onManualClick={() => setManual(true)}
             onAutoAward={handleAutoAward}
             autoLoading={autoLoading}
             onRefresh={onRefresh}
@@ -476,6 +601,13 @@ function QuotationCard({ q, onRefresh }) {
         <InviteModal
           quotationId={q.id}
           onClose={() => setInvite(false)}
+          onSuccess={onRefresh}
+        />
+      )}
+      {manualModal && (
+        <ManualQuoteModal
+          quotation={q}
+          onClose={() => setManual(false)}
           onSuccess={onRefresh}
         />
       )}
