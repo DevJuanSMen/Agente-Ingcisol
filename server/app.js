@@ -22,6 +22,7 @@ const assistantRouter = require('./modules/assistant/assistant.router');
 const masterImportRouter = require('./modules/masterimport/masterimport.router');
 const permissionsRouter = require('./modules/permissions/permissions.router');
 const adminRouter = require('./modules/admin/admin.router');
+const demoRequestsRouter = require('./modules/demoRequests/demoRequests.router');
 const { ensureSuperadmin } = require('./shared/ensureSuperadmin');
 const { verifyToken } = require('./shared/middleware/auth');
 const { requireSetupComplete } = require('./shared/middleware/onboarding');
@@ -62,6 +63,7 @@ app.use('/api/budget', budgetRouter);
 app.use('/api/master-import', masterImportRouter);
 app.use('/api/permissions', permissionsRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/demo-requests', demoRequestsRouter);
 
 // Módulos operativos: bloqueados hasta completar la configuración inicial
 // (403 SETUP_INCOMPLETE). verifyToken corre aquí para que el middleware conozca

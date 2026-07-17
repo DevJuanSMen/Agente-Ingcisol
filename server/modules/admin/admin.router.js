@@ -182,6 +182,14 @@ router.get('/whatsapp/logs', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Solicitudes de demo (página pública /demo) ───────────────────────────────
+
+router.get('/demo-requests', async (req, res, next) => {
+  try {
+    ok(res, await adminService.getDemoRequests());
+  } catch (err) { next(err); }
+});
+
 // ── Interruptor por empresa (exclusión del bot global) ──────────────────────
 
 router.post('/companies/:id/bot/disable', async (req, res, next) => {

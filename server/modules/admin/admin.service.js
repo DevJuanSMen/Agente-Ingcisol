@@ -2,6 +2,7 @@ const prisma = require('../../shared/db');
 const redis = require('../../shared/redis');
 const { enqueueText } = require('../whatsapp/sendQueue');
 const { accessCacheKey } = require('../company/company.service');
+const demoRequestsService = require('../demoRequests/demoRequests.service');
 
 // Empresa "de sistema" que aloja al superadmin; se oculta del listado.
 const SYSTEM_COMPANY_ID = 'system-platform';
@@ -151,7 +152,10 @@ const getBotLogs = async (limit = 30) => {
   return logs.map((l) => ({ ...l, empresa: l.companyId ? nameById.get(l.companyId) || l.companyId : null }));
 };
 
+// Solicitudes de demo enviadas desde la página pública /demo.
+const getDemoRequests = () => demoRequestsService.list();
+
 module.exports = {
   listCompanies, getOverview, getWhatsappStatus, disableBot, enableBot, getBotLogs, SYSTEM_COMPANY_ID,
-  approveCompany, rejectCompany,
+  approveCompany, rejectCompany, getDemoRequests,
 };

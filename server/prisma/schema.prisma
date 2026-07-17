@@ -541,3 +541,14 @@ model AuditLog {
   company Company @relation(fields: [companyId], references: [id])
   user    User    @relation(fields: [userId], references: [id])
 }
+
+// Solicitudes de demo enviadas desde la página pública /demo (sin autenticación).
+model DemoRequest {
+  id        String   @id @default(cuid())
+  nombre    String
+  email     String
+  telefono  String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

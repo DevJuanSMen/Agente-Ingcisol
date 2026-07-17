@@ -6,6 +6,7 @@ import AppShell from './components/layout/AppShell';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
+import DemoRequest from './pages/DemoRequest';
 import Dashboard from './pages/Dashboard';
 
 import ProjectList from './pages/Projects/ProjectList';
@@ -80,6 +81,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/demo" element={<DemoRequest />} />
         <Route
           path="/onboarding"
           element={

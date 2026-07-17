@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import api from '../../api/client';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
+import Table from '../../components/ui/Table';
 
 const fmtD = (d) => d ? new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
@@ -267,6 +268,48 @@ function ProjectsTab({ companies, loading }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ── Tab: Demo (solicitudes del formulario público /demo) ──────────────────────
+function DemoRequestsTab() {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (loaded) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get('/admin/demo-requests');
+        setRequests(data.data || []);
+      } catch {
+        setRequests([]);
+      } finally {
+        setLoading(false);
+        setLoaded(true);
+      }
+    })();
+  }, [loaded]);
+
+  const columns = [
+    { key: 'nombre', label: 'Nombre' },
+    {
+      key: 'email',
+      label: 'Correo',
+      render: (r) => <a href={`mailto:${r.email}`} className="text-primary hover:underline">{r.email}</a>,
+    },
+    {
+      key: 'telefono',
+      label: 'Teléfono',
+      render: (r) => <a href={`tel:${r.telefono}`} className="text-primary hover:underline">{r.telefono}</a>,
+    },
+    { key: 'createdAt', label: 'Fecha', render: (r) => fmtD(r.createdAt) },
+  ];
+
+  return (
+    <Table columns={columns} data={requests} loading={loading} emptyMessage="Sin solicitudes de demo" />
   );
 }
 
@@ -718,6 +761,7 @@ const TABS = [
   { id: 'requests', label: '📥 Solicitudes' },
   { id: 'companies', label: '🏢 Empresas' },
   { id: 'projects', label: '🏗️ Proyectos' },
+  { id: 'demo', label: '📩 Demo' },
   { id: 'bot', label: '💬 Bot WhatsApp' },
   { id: 'email', label: '✉️ Correo' },
 ];
@@ -821,6 +865,7 @@ export default function SuperadminPanel() {
           <CompaniesTab companies={companies} loading={loading} onToggleBot={toggleBot} acting={acting} />
         )}
         {tab === 'projects' && <ProjectsTab companies={companies} loading={loading} />}
+        {tab === 'demo' && <DemoRequestsTab />}
         {tab === 'bot' && <BotTab />}
         {tab === 'email' && <EmailTab />}
       </Card>
